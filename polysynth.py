@@ -49,20 +49,20 @@ class Queue:
         self.head = 0
         self.tail = 0
 
-    def next(self, pointer):
+    def _next(self, pointer):
         """Incrementing a cicular buffer pointer."""
         return (pointer + 1) % self.maxsize
         
-    def prev(self, pointer):
+    def _prev(self, pointer):
         """Decrementing a cicular buffer pointer."""
         return (pointer + self.maxsize - 1) % self.maxsize
         
     def put(self, item):
         self.queue[self.tail] = item
-        self.tail = self.next(self.tail)
+        self.tail = self._next(self.tail)
         if self.tail == self.head:
             # Wrap around
-            self.head = self.next(self.head)
+            self.head = self._next(self.head)
             print("queue: dropped oldest item")
 
     def _delete_at(self, pointer):
@@ -70,11 +70,11 @@ class Queue:
         if self.tail > pointer:
             self.queue[pointer : self.tail - 1] = (
                 self.queue[pointer + 1 : self.tail])
-            self.tail = self.prev(self.tail)
+            self.tail = self._prev(self.tail)
         elif self.tail < pointer:
             self.queue[pointer : -1] = self.queue[pointer + 1:]
             self.queue[-1] = self.queue[0]
-            self.tail = self.prev(self.tail)
+            self.tail = self._prev(self.tail)
         else:
             raise ValueError('pointer at tail???')
 
@@ -85,7 +85,7 @@ class Queue:
             if self.queue[pointer] == value:
                 self._delete_at(pointer)
                 return
-            pointer = self.next(pointer)
+            pointer = self._next(pointer)
         # Fell through, value wasn't found.
         raise ValueError
             
@@ -93,7 +93,7 @@ class Queue:
         return self.head == self.tail
 
     def full(self):
-        return self.head == self.next(self.tail)
+        return self.head == self._next(self.tail)
 
     def qsize(self):
         return (self.tail - self.head + self.maxsize) % self.maxsize
@@ -103,7 +103,7 @@ class Queue:
             # get() on empty queue.
             raise ValueError
         value = self.queue[self.head]
-        self.head = self.next(self.head)
+        self.head = self._next(self.head)
         return value
 
     def __repr__(self):
@@ -111,7 +111,7 @@ class Queue:
         p = self.head
         while p != self.tail:
             result.append(self.queue[p])
-            p = self.next(p)
+            p = self._next(p)
         return ("Queue(maxsize=%d) [" % (self.maxsize - 1)
                 + (", ".join(str(s) for s in result))
                 + "]")
@@ -277,6 +277,15 @@ class NoteBase:
     oscs_per_note = 0  # How many oscs to request.
     release_time = 0.0  # How long after note_off to hold on to oscs (sec).
     
+    # Track all created instances, separate for each derived class.
+    # from https://stackoverflow.com/questions/12101958/how-to-keep-track-of-class-instances
+    def __new__(cls, midinote, vel):
+        instance = super().__new__(cls)
+        if "instances" not in cls.__dict__:
+            cls.instances = set()
+        cls.instances.add(instance)
+        return instance
+
     def __init__(self, midinote, vel):
         self.oscset = OSC_SOURCE.get_oscs(self.oscs_per_note, self.return_oscs)
         self.oscs = self.oscset.oscs
@@ -299,6 +308,14 @@ class NoteBase:
         """Called when oscs are stolen."""
         self.oscset = None
         self.oscs = []
+        # Don't track this object any more.
+        self.__class__.instances.remove(self)
+
+    @classmethod
+    def broadcast_control_change(cls, control, value):
+        for instance in cls.instances:
+            instance.control_change(control, value)
+
 
 class SimpleNote(NoteBase):
     oscs_per_note = 2
@@ -308,14 +325,37 @@ class SimpleNote(NoteBase):
         osc, modosc = self.oscs
         amy.send(osc=modosc, wave=amy.SINE, freq=5, amp=0.005)
         amy.send(osc=osc, wave=amy.SAW_DOWN, freq=440,
-                 mod_source=modosc, mod_target=amy.TARGET_FREQ,
-                 filter_freq=500, filter_type=amy.FILTER_LPF)
-        amy.send(osc=osc, bp0="5000,0.1,250,0",
-                 bp0_target=amy.TARGET_FILTER_FREQ, resonance=0.8)
+                 mod_source=modosc, mod_target=amy.TARGET_FREQ)
         amy.send(osc=osc, bp1="100,1.0,8000,0.5,250,0",
                  bp1_target=amy.TARGET_AMP)
+        amy.send(osc=self.oscs[0],
+                 bp0="5000,0.1,250,0",
+                 filter_type=amy.FILTER_LPF,
+                 bp0_target=amy.TARGET_FILTER_FREQ)
+        self.update_filter()
         # Launch the note
-        amy.send(osc=osc, vel=vel, freq=C0_FREQ * math.pow(2, midinote / 12.))
+        self.freq = C0_FREQ * math.pow(2, midinote / 12.)
+        amy.send(osc=osc, vel=vel, freq=self.freq * current_pitch_bend())
+
+    def update_filter(self):
+        filter_freq_value = CONTROL_VALUES[SLIDER_IDS[0]]
+        resonance_value = CONTROL_VALUES[SLIDER_IDS[1]]
+        self.filter_freq = 10000 * math.pow(2, (filter_freq_value - 128) / 12)
+        self.resonance = 64 * math.pow(2, (resonance_value - 64) /  12)
+        amy.send(osc=self.oscs[0],
+                 filter_freq=self.filter_freq,
+                 resonance=self.resonance)
+        
+    def control_change(self, control, value):
+        if control == 0:
+            # Pitch bend factor has already been captured, just need to update.
+            amy.send(osc=self.oscs[0], freq=self.freq * current_pitch_bend())
+        elif control == SLIDER_IDS[0]:
+            # Filter frequency.
+            self.update_filter()
+        elif control == SLIDER_IDS[1]:
+            # Filter resonance.
+            self.update_filter()
 
 
 class FMNote(NoteBase):
@@ -327,15 +367,49 @@ class FMNote(NoteBase):
         osc = self.oscs[0]
         amy.send(osc=osc, wave=amy.ALGO, freq=5, patch=self.patch)
         # Launch the note
-        amy.send(osc=osc, vel=vel, freq=C0_FREQ * math.pow(2, midinote / 12.))
+        self.freq = C0_FREQ * math.pow(2, midinote / 12.)
+        amy.send(osc=osc, vel=vel, freq=self.freq  * current_pitch_bend())
+
+    def control_change(self, control, value):
+        if control == 0:
+            # Pitch bend factor has already been captured, just need to update.
+            amy.send(osc=self.oscs[0], freq=self.freq * current_pitch_bend())
+            
+
+PITCH_BEND = 64  # default.
+
+def pitch_bend(bend):
+    """Called by midi_event_cb when pitch bend changes."""
+    global PITCH_BEND
+    PITCH_BEND = bend
+    # Function that must be provided to distribute to notes.
+    notify_pitch_bend(bend)
+
+def current_pitch_bend():
+    """Called by notes to get the current bend factor."""
+    # Prevailing pitch bend factor.  +/- 0.5 octave range.
+    global PITCH_BEND
+    return math.pow(2, (PITCH_BEND - 64) / 128)
 
 
-# Call this to change the patch being used
-def set_patch(patch):
-    FMNote.patch = patch
+NUM_CONTROLS = 128
+CONTROL_VALUES = [64] * NUM_CONTROLS
+
+# Oxygen49 slider IDs, starting from left.
+SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
+
+# Oxygen49 knobs, top row then second row.
+KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
+
+# Oxygen49 buttons.  They toggle between 0 and 0x7f.
+BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
 
 
-amy.reset()
+def control_change(control, value):
+    global CONTROL_VALUES
+    CONTROL_VALUES[control] = value
+    notify_control_change(control, value)
+
 
 NUM_KEYS = 128
 KEYNOTES = [None] * NUM_KEYS
@@ -350,9 +424,10 @@ def midi_event_cb(x):
       midinote = m[1]
       midivel = m[2]
       vel = midivel / 127.
-      #KEYNOTES[midinote] = SimpleNote(midinote, vel)
-      KEYNOTES[midinote] = FMNote(midinote, vel)
-      #print(pitch, vel)
+      if KEYNOTES[midinote]:
+        # Terminate existing instance of this pitch.
+        KEYNOTES[midinote].note_off()
+      KEYNOTES[midinote] = note_on(midinote, vel)
     elif m[0] == 0x80:  # Note off.
       midinote = m[1]
       if KEYNOTES[midinote]:
@@ -360,10 +435,45 @@ def midi_event_cb(x):
         KEYNOTES[midinote] = None
     elif m[0] == 0xc0:  # Program change - choose the DX7 preset
       set_patch(m[1])
+    elif m[0] == 0xe0:  # Pitch bend.
+      pitch_bend(m[2])
+    elif m[0] == 0xb0:  # Other control slider.
+      control_change(m[1], m[2])  # e.g.
         
     # Are there more events waiting?
     m = tulip.midi_in()
 
 # Install the callback.
 tulip.midi_callback(midi_event_cb)
+
+amy.reset()
+
+###############################################
+# Set up methods for voice in use.
+
+def note_on(midinote, velocity):
+    return NoteClass(midinote, velocity)
+
+def set_patch(patch):
+    NoteClass.patch = patch
+
+def notify_control_change(control, value):
+    NoteClass.broadcast_control_change(control, value)
+
+def notify_pitch_bend(bend):
+    # Pitch is control 0, value doesn't matter (accessed via current_pitch_bend()).
+    NoteClass.broadcast_control_change(0, bend);
+    
+
+#SYNTH_TYPE = 'dx7'
+SYNTH_TYPE = 'juno'
+
+if SYNTH_TYPE == 'dx7':
+    NoteClass = FMNote
+elif SYNTH_TYPE == 'juno':
+    NoteClass = SimpleNote
+else:
+    raise ValueError('Unknown SYNTH_TYPE: ' + SYNTH_TYPE)
+
+
 
