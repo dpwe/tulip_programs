@@ -23,6 +23,15 @@ via the midi callback hook.
 >>> set_patch(10)  # E.PIANO 1 - see amy/src/fm.h
 
 Releases:
+2023-07-16 Supporting control inputs from Oxygen49 MIDI keyboard.
+           Pitch bend works.
+           Set SYNTH_TYPE='juno' for WIP analog synth emulation, with sliders
+           for ADSR for amplitude and filter, LFO rate, and knobs for
+           filter freq, filter Q, and pitch LFO depth.  However, something
+           weird is happening with release, such that the notes tend to
+           retrigger or something if one envelope has a longer release than
+           the other.
+
 2023-07-10 Pseudo coroutines via the "rescind queue" returns oscs a short
            while (Note.release_time) after their note off, so held notes won't
            be stolen if later short notes have ended.
@@ -39,6 +48,21 @@ try:
 except:
     amy = alles
     alles.chorus(1)
+
+# Optional monkeypatch of send() method to diagnose exactly what is being sent.
+def amy_send_patch(osc=0, wave=-1, patch=-1, note=-1, vel=-1, amp=-1, freq=-1, duty=-1, feedback=-1, timestamp=None, reset=-1, phase=-1, pan=-1, \
+        client=-1, retries=1, volume=-1, filter_freq = -1, resonance = -1, bp0="", bp1="", bp2="", bp0_target=-1, bp1_target=-1, bp2_target=-1, mod_target=-1, \
+        debug=-1, mod_source=-1, eq_l = -1, eq_m = -1, eq_h = -1, filter_type= -1, algorithm=-1, ratio = -1, latency_ms = -1, algo_source=None, chorus_level=-1, \
+        chorus_delay=-1, reverb_level=-1, reverb_liveness=-1, reverb_damping=-1, reverb_xover=-1):
+    print("amy_send:", osc, wave, patch, note, vel, amp, freq, filter_freq, resonance, bp0, bp1)
+    orig_amy_send(osc=osc, wave=wave, patch=patch, note=note, vel=vel, amp=amp, freq=freq, duty=duty, feedback=feedback, timestamp=timestamp, reset=reset, phase=phase, pan=pan, \
+                  client=client, retries=retries, volume=volume, filter_freq=filter_freq, resonance=resonance, bp0=bp0, bp1=bp1, bp2=bp2, bp0_target=bp0_target, bp1_target=bp1_target, bp2_target=bp2_target, mod_target=mod_target, \
+                  debug=debug, mod_source=mod_source, eq_l=eq_l, eq_m=eq_m, eq_h=eq_h, filter_type=filter_type, algorithm=algorithm, ratio=ratio, latency_ms=latency_ms, algo_source=algo_source, chorus_level=chorus_level, \
+                  chorus_delay=chorus_delay, reverb_level=reverb_level, reverb_liveness=reverb_liveness, reverb_damping=reverb_damping, reverb_xover=reverb_xover)
+
+# Apply the monkeypatch?
+#orig_amy_send = amy.send
+#amy.send = amy_send_patch
 
 
 # Micropython collections.deque does not support remove.
@@ -313,8 +337,11 @@ class NoteBase:
 
     @classmethod
     def broadcast_control_change(cls, control, value):
-        for instance in cls.instances:
-            instance.control_change(control, value)
+        try:
+            for instance in cls.instances:
+                instance.control_change(control, value)
+        except:  # instance set not yet created?
+            pass
 
 
 class SimpleNote(NoteBase):
@@ -323,39 +350,67 @@ class SimpleNote(NoteBase):
     
     def note_on(self, midinote, vel):
         osc, modosc = self.oscs
-        amy.send(osc=modosc, wave=amy.SINE, freq=5, amp=0.005)
-        amy.send(osc=osc, wave=amy.SAW_DOWN, freq=440,
+        amy.send(osc=modosc, wave=amy.SINE)
+        self.update_lfo()
+        amy.send(osc=osc, wave=amy.SAW_DOWN,
                  mod_source=modosc, mod_target=amy.TARGET_FREQ)
-        amy.send(osc=osc, bp1="100,1.0,8000,0.5,250,0",
-                 bp1_target=amy.TARGET_AMP)
         amy.send(osc=self.oscs[0],
-                 bp0="5000,0.1,250,0",
                  filter_type=amy.FILTER_LPF,
-                 bp0_target=amy.TARGET_FILTER_FREQ)
+                 bp0_target=amy.TARGET_AMP,
+                 bp1_target=amy.TARGET_FILTER_FREQ)
         self.update_filter()
-        # Launch the note
+        self.update_eg0()
+        self.update_eg1()
+        # Launch the note.
         self.freq = C0_FREQ * math.pow(2, midinote / 12.)
         amy.send(osc=osc, vel=vel, freq=self.freq * current_pitch_bend())
 
+    def update_lfo(self):
+        amy.send(osc=self.oscs[1],
+                 freq=control_value(LFO_RATE, 0.05, 20),
+                 amp=control_value(LFO_AMP, 0.0001, 1.0))
+
+        
     def update_filter(self):
-        filter_freq_value = CONTROL_VALUES[SLIDER_IDS[0]]
-        resonance_value = CONTROL_VALUES[SLIDER_IDS[1]]
-        self.filter_freq = 10000 * math.pow(2, (filter_freq_value - 128) / 12)
-        self.resonance = 64 * math.pow(2, (resonance_value - 64) /  12)
+        self.filter_freq = control_value(FILTER_FREQ, 10, 10240)  # 10 octaves
+        self.resonance = control_value(FILTER_Q, 0.02, 50)  # Middle value is 1
         amy.send(osc=self.oscs[0],
                  filter_freq=self.filter_freq,
                  resonance=self.resonance)
         
+    def update_eg(self, attack_ctl, decay_ctl, sustain_ctl, release_ctl, eg=0):
+        attack_ms = int(round(1000. * control_value(attack_ctl, 0.01, 10)))
+        decay_ms = int(round(1000. * control_value(decay_ctl, 0.01, 10)))
+        sustain_level = "{:.3f}".format(control_value(sustain_ctl, 0., 1., is_log=False))
+        release_ms = int(round(1000. * control_value(release_ctl, 0.1, 100)))
+        osc = self.oscs[0]
+        bp_string = f"0,0,{attack_ms},1.0,{decay_ms},{sustain_level},{release_ms},0"
+        if eg == 0:  # EG0 is amplitude.
+            amy.send(osc=osc, bp0=bp_string)
+        else:  # EG1 is VCF.
+            amy.send(osc=osc, bp1=bp_string)
+
+    def update_eg0(self):
+        self.update_eg(EG0_ATTACK, EG0_DECAY, EG0_SUSTAIN, EG0_RELEASE, 0)
+
+    def update_eg1(self):
+        self.update_eg(EG1_ATTACK, EG1_DECAY, EG1_SUSTAIN, EG1_RELEASE, 1)
+                 
     def control_change(self, control, value):
         if control == 0:
             # Pitch bend factor has already been captured, just need to update.
             amy.send(osc=self.oscs[0], freq=self.freq * current_pitch_bend())
-        elif control == SLIDER_IDS[0]:
+        elif control == FILTER_FREQ or control == FILTER_Q:
             # Filter frequency.
             self.update_filter()
-        elif control == SLIDER_IDS[1]:
-            # Filter resonance.
-            self.update_filter()
+        elif (control == EG0_ATTACK or control == EG0_DECAY or
+              control == EG0_SUSTAIN or control == EG0_RELEASE):
+            self.update_eg0()  # Amplitude EG
+        elif (control == EG1_ATTACK or control == EG1_DECAY or
+              control == EG1_SUSTAIN or control == EG1_RELEASE):
+            self.update_eg1()  # Filter EG
+        elif control == LFO_RATE or control == LFO_AMP:
+            self.update_lfo()
 
 
 class FMNote(NoteBase):
@@ -404,11 +459,36 @@ KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
 # Oxygen49 buttons.  They toggle between 0 and 0x7f.
 BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
 
+# Assignment of Juno-style controls
+EG0_ATTACK = SLIDER_IDS[0]
+EG0_DECAY = SLIDER_IDS[1]
+EG0_SUSTAIN = SLIDER_IDS[2]
+EG0_RELEASE = SLIDER_IDS[3]
+
+EG1_ATTACK = SLIDER_IDS[4]
+EG1_DECAY = SLIDER_IDS[5]
+EG1_SUSTAIN = SLIDER_IDS[6]
+EG1_RELEASE = SLIDER_IDS[7]
+
+LFO_RATE = SLIDER_IDS[8]
+LFO_AMP = KNOB_IDS[4]
+
+FILTER_FREQ = KNOB_IDS[0]
+FILTER_Q = KNOB_IDS[1]
+
 
 def control_change(control, value):
     global CONTROL_VALUES
     CONTROL_VALUES[control] = value
     notify_control_change(control, value)
+
+def control_value(control, min_val=1, max_val=100, is_log=True):
+    """Return a ready-scaled value for a control."""
+    if is_log:
+        return min_val * math.exp(
+            CONTROL_VALUES[control] / 127.0 * math.log(max_val / min_val))
+    else:  # Linear.
+        return min_val + (max_val - min_val) * (CONTROL_VALUES[control] / 127.0)
 
 
 NUM_KEYS = 128
@@ -465,8 +545,8 @@ def notify_pitch_bend(bend):
     NoteClass.broadcast_control_change(0, bend);
     
 
-#SYNTH_TYPE = 'dx7'
-SYNTH_TYPE = 'juno'
+SYNTH_TYPE = 'dx7'
+#SYNTH_TYPE = 'juno'
 
 if SYNTH_TYPE == 'dx7':
     NoteClass = FMNote
