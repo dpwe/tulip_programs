@@ -1,3 +1,5 @@
+"""juno_ui: GUI for controlling Juno patches."""
+import juno
 
 registered_callbacks = {}
 
@@ -63,10 +65,11 @@ class Slider(UIBase):
   y_val = 235
   val = 0
   padx = 15
-  w_leg = 30
+  w_leg = 26
   
-  def __init__(self, name):
+  def __init__(self, name, callback=None):
     super().__init__(name)
+    self.value_callback_fn = callback
     self.id_ = IdFactory.next_id()
     self.w = self.w_sli + 2 * self.padx
     self.h = self.y_val + 2 * self.text_height
@@ -97,6 +100,9 @@ class Slider(UIBase):
     h = self.text_height
     tulip.bg_rect(x, y, w, h, self.bg_color, True)
     tulip.bg_str("%.2f" % self.val, x, y, self.text_color, self.body_font, w, h)
+    tulip.ui_slider(self.id_, self.val)
+    if self.value_callback_fn is not None:
+      self.value_callback_fn(self.val)
 
   def callback(self, id_):
     self.set_val(tulip.ui_slider(id_))
@@ -109,10 +115,12 @@ class ButtonSet(UIBase):
   padx = 10
   button_w = 10
   text_height = 12
-  checkbox_style = 0
 
-  def __init__(self, name, tags, checkbox_style):
+  def __init__(self, name, tags, callbacks=None, checkbox_style=0):
     super().__init__(name)
+    if callbacks is None:
+      callbacks = [None] * len(tags)
+    self.value_callback_fns = {tag: callback for tag, callback in zip(tags, callbacks)}
     # Update geometry
     self.w = 2 * self.padx
     self.h = self.y_top + len(tags) * self.y_spacing
@@ -152,35 +160,49 @@ class ButtonSet(UIBase):
 
 class RadioButton(ButtonSet):
 
-  def __init__(self, name, tags):
+  def __init__(self, name, tags, callbacks):
     # checkbox_style: 0 is filled box, 1 is X, 2 is filled circle
-    super().__init__(name, tags, 2)
+    super().__init__(name, tags, callbacks, 2)
   
-  def callback(self, ui_id):
-    # RadioButton deselects all other buttons.
+  def set_val(self, tag):
     for id_, button_tag in zip(self.ids, self.tags):
-      if ui_id == id_:
+      if button_tag == tag:
         tulip.ui_checkbox(id_, True)
         self.state[button_tag] = True
       else:
         tulip.ui_checkbox(id_, False)
         self.state[button_tag] = False
+      if self.value_callback_fns[button_tag] is not None:
+        self.value_callback_fns[button_tag](self.state[button_tag])
 
+  def callback(self, ui_id):
+    # RadioButton deselects all other buttons.
+    for id_, button_tag in zip(self.ids, self.tags):
+      if ui_id == id_:
+        self.set_val(button_tag)
+        
 
 class OptionButtons(ButtonSet):
 
-  def __init__(self, name, tags):
+  def __init__(self, name, tags, callbacks):
     # checkbox_style: 0 is filled box, 1 is X, 2 is filled circle
-    super().__init__(name, tags, 1)
+    super().__init__(name, tags, callbacks, 1)
     self.values = {}
     for id_, tag in zip(self.ids, self.tags):
       self.state[tag] = False
   
+  def set_val(self, tag, val):
+    for id_, button_tag in zip(self.ids, self.tags):
+      if button_tag == tag:
+        tulip.ui_checkbox(id_, val)
+        self.state[button_tag] = val
+      if self.value_callback_fns[button_tag] is not None:
+        self.value_callback_fns[button_tag](self.state[button_tag])
+
   def callback(self, ui_id):
-    # RadioButton deselects all other buttons.
-    for id_, tag in zip(self.ids, self.tags):
+    for id_, button_tag in zip(self.ids, self.tags):
       if ui_id == id_:
-        self.state[tag] = tulip.ui_checkbox(id_)
+        self.set_val(tag, tulip.ui_checkbox(id_))
 
 
 class UIGroup(UIBase):
@@ -219,56 +241,97 @@ class UIGroup(UIBase):
     for element in self.elements:
       element.draw()
 
-    
-# Juno UI
-tulip.bg_clear()
 
+import juno
+jp = juno.JunoPatch.from_patch_number(20)
+jp.init_AMY()
+alles.send(osc=0, note=60, vel=1)
 
-lfo_rate = Slider('LFO rate')
-lfo_delay = Slider('LFO delay')
+# Make the callback function.
+def jcb(arg):
+  callback = lambda x: jp.set_param(arg, x)
+  return callback
 
-lfo = UIGroup('LFO', [lfo_rate, lfo_delay])
+lfo_rate = Slider('Rate', jcb('lfo_rate'))
+lfo_delay_time = Slider('Delay', jcb('lfo_delay_time'))
 
-dco_range = RadioButton("Range", ["4'", "8'", "16'"])
-dco_lfo = Slider('LFO')
-dco_pwm = Slider('PWM')
-dco_pwm_mode = RadioButton('PWM', ['LFO', 'Manual'])
-dco_wave = OptionButtons('Wave', ['Pulse', 'Saw'])
-dco_sub = Slider('Sub')
-dco_noise = Slider('Noise')
+lfo = UIGroup('LFO', [lfo_rate, lfo_delay_time])
+
+dco_range = RadioButton("Range", ["4'", "8'", "16'"],
+                        [jcb('stop_4'), jcb('stop_8'), jcb('stop_16')])
+dco_lfo = Slider('LFO', jcb('dco_lfo'))
+dco_pwm = Slider('PWM', jcb('dco_pwm'))
+dco_pwm_mode = RadioButton('PWM', ['LFO', 'Man'], [None, jcb('pwm_manual')])
+dco_wave = OptionButtons('Wave', ['Pulse', 'Saw'], [jcb('pulse'), jcb('saw')])
+dco_sub = Slider('Sub', jcb('dco_sub'))
+dco_noise = Slider('Noise', jcb('dco_noise'))
 
 dco = UIGroup('DCO', [dco_range, dco_lfo, dco_pwm, dco_pwm_mode, dco_wave, dco_sub, dco_noise])
 
-hpf_freq = Slider('Freq')
+#hpf_freq = Slider('Freq', jcb('hpf'))
+def hpf(n):
+  callback = lambda x: jp.set_param('hpf', n) if x else None
+  return callback
+  
+hpf_freq = RadioButton('Freq', ['3', '2', '1', '0'],
+                       [hpf(3), hpf(2), hpf(1), hpf(0)])
 hpf = UIGroup('HPF', [hpf_freq])
 
-vcf_freq = Slider('Freq')
-vcf_res = Slider('Res')
-vcf_pol = RadioButton('Pol', ['Pos', 'Neg'])
-vcf_env = Slider('Env')
-vcf_lfo = Slider('LFO')
-vcf_kybd = Slider('Kybd')
+vcf_freq = Slider('Freq', jcb('vcf_freq'))
+vcf_res = Slider('Res', jcb('vcf_res'))
+vcf_pol = RadioButton('Pol', ['Pos', 'Neg'], [None, jcb('vcf_neg')])
+vcf_env = Slider('Env', jcb('vcf_env'))
+vcf_lfo = Slider('LFO', jcb('vcf_lfo'))
+vcf_kbd = Slider('Kybd', jcb('vcf_kbd'))
 
-vcf = UIGroup('VCF', [vcf_freq, vcf_res, vcf_pol, vcf_env, vcf_lfo, vcf_kybd])
+vcf = UIGroup('VCF', [vcf_freq, vcf_res, vcf_pol, vcf_env, vcf_lfo, vcf_kbd])
 
-vca_mode = RadioButton('Mode', ['Env', 'Gate'])
-vca_level = Slider('Level')
+vca_mode = RadioButton('Mode', ['Env', 'Gate'], [None, jcb('vca_gate')])
+vca_level = Slider('Level', jcb('vca_level'))
 
 vca = UIGroup('VCA', [vca_mode, vca_level])
 
-env_a = Slider('A')
-env_d = Slider('D')
-env_s = Slider('S')
-env_r = Slider('R')
+env_a = Slider('A', jcb('env_a'))
+env_d = Slider('D', jcb('env_d'))
+env_s = Slider('S', jcb('env_s'))
+env_r = Slider('R', jcb('env_r'))
 
 env = UIGroup('ENV', [env_a, env_d, env_s, env_r])
 
-chorus_mode = RadioButton('Mode', ['Off', 'I', 'II', 'III'])
+def cho(n):
+  callback = lambda x: jp.set_param('chorus', n) if x else None
+  return callback
+
+chorus_mode = RadioButton('Mode', ['Off', 'I', 'II', 'III'],
+                          [cho(0), cho(1), cho(2), cho(3)])
 chorus = UIGroup('CH', [chorus_mode])
 
 
 juno_ui = UIGroup('', [lfo, dco, hpf, vcf, vca, env, chorus])
 
+# Juno UI
+tulip.bg_clear()
+
 juno_ui.place(10, 30)
 juno_ui.draw()
+
+def setup_from_patch(patch_number):
+  """Make the UI match the values in a JunoPatch."""
+  patch = juno.JunoPatch.from_patch_number(patch_number)
+  for el in ['lfo_rate', 'lfo_delay_time',
+             'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
+             'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd',
+             'vca_level', 'env_a', 'env_d', 'env_s', 'env_r']:
+    # globals()[el] is the (UI) object with that name
+    # getattr(patch, el) is that member of the patch object
+    globals()[el].set_val(getattr(patch, el))
+
+  dco_range.set_val("4'" if patch.stop_4 else "16'" if patch.stop_16 else "8'")
+  dco_pwm_mode.set_val('Man' if patch.pwm_manual else 'LFO')
+  dco_wave.set_val('Pulse', patch.pulse)
+  dco_wave.set_val('Saw', patch.saw)
+  hpf_freq.set_val(str(patch.hpf))
+  vcf_pol.set_val('Neg' if patch.vcf_neg else 'Pos')
+  vca_mode.set_val('Gate' if patch.vca_gate else 'Env')
+  chorus_mode.set_val(['Off', 'I', 'II', 'III'][patch.chorus])
 
