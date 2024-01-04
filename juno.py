@@ -161,15 +161,13 @@ class JunoPatch:
   vca_gate = False  # else env
   vcf_neg = False  # else pos
   hpf = 0
-  # Map of update_fn: [params triggering update]
-  update_fn_params = {
-    'lfo': ['lfo_rate', 'lfo_delay_time'],
-    'dco': ['dco_lfo', 'dco_pwm', 'dco_noise', 'dco_sub',
-            'stop_16', 'stop_8', 'stop_4',
-            'pulse', 'saw', 'pwm_manual', 'vca_level'],
-    'vcf': ['vcf_neg', 'vcf_env', 'vcf_freq', 'vcf_lfo', 'vcf_res', 'vcf_kbd'],
-    'env': ['env_a', 'env_d', 'env_s', 'env_r'],
-    'cho': ['chorus', 'hpf']}
+  # Map of setup_fn: [params triggering setup]
+  post_set_fn = {'lfo': ['lfo_rate', 'lfo_delay_time'],
+                 'dco': ['dco_lfo', 'dco_pwm', 'dco_noise', 'dco_sub', 'stop_16', 'stop_8', 'stop_4',
+                         'pulse', 'saw', 'pwm_manual', 'vca_level'],
+                 'vcf': ['vcf_neg', 'vcf_env', 'vcf_freq', 'vcf_lfo', 'vcf_res', 'vcf_kbd'],
+                 'env': ['env_a', 'env_d', 'env_s', 'env_r'],
+                 'cho': ['chorus', 'hpf']}
   
   # These lists name the fields in the order they appear in the sysex.
   FIELDS = ['lfo_rate', 'lfo_delay_time', 'dco_lfo', 'dco_pwm', 'dco_noise',
@@ -223,10 +221,10 @@ class JunoPatch:
       ffmt(to_level(self.env_s)), to_release_time(self.env_r)
     )
 
-  def init_AMY(self, base_osc=0):
+  def init_AMY(self, base_osc=0, saw_osc=None, sub_osc=None, nse_osc=None, lfo_osc=None):
     """Output AMY commands to set up the patch.
     Send amy.send(osc=<base_osc + 1>, note=50, vel=1) afterwards."""
-    amy.reset()
+    #amy.reset()
     # base_osc is pulse/PWM
     # base_osc + 1 is SAW
     # base_osc + 2 is SUBOCTAVE
@@ -235,10 +233,10 @@ class JunoPatch:
     #   env0 is VCA
     #   env1 is VCF
     self.pwm_osc = base_osc
-    self.saw_osc = base_osc + 1
-    self.sub_osc = base_osc + 2
-    self.nse_osc = base_osc + 3
-    self.lfo_osc = base_osc + 4
+    self.saw_osc = saw_osc if saw_osc is not None else base_osc + 1
+    self.sub_osc = sub_osc if sub_osc is not None else base_osc + 2
+    self.nse_osc = nse_osc if nse_osc is not None else base_osc + 3
+    self.lfo_osc = lfo_osc if lfo_osc is not None else base_osc + 4
     self.voice_oscs = [self.pwm_osc, self.saw_osc, self.sub_osc, self.nse_osc]
     
     # One-time args to oscs.
@@ -349,6 +347,6 @@ class JunoPatch:
   # Setters for each Juno UI control
   def set_param(self, param, val):
     setattr(self, param,  val)
-    for group, params in self.update_fn_params.items():
+    for group, params in self.post_set_fn.items():
       if param in params:
         getattr(self, 'update_' + group)()

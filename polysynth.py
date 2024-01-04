@@ -50,15 +50,9 @@ except:
     alles.chorus(1)
 
 # Optional monkeypatch of send() method to diagnose exactly what is being sent.
-def amy_send_patch(osc=0, wave=-1, patch=-1, note=-1, vel=-1, amp=-1, freq=-1, duty=-1, feedback=-1, timestamp=None, reset=-1, phase=-1, pan=-1, \
-        client=-1, retries=1, volume=-1, filter_freq = -1, resonance = -1, bp0="", bp1="", bp2="", bp0_target=-1, bp1_target=-1, bp2_target=-1, mod_target=-1, \
-        debug=-1, mod_source=-1, eq_l = -1, eq_m = -1, eq_h = -1, filter_type= -1, algorithm=-1, ratio = -1, latency_ms = -1, algo_source=None, chorus_level=-1, \
-        chorus_delay=-1, reverb_level=-1, reverb_liveness=-1, reverb_damping=-1, reverb_xover=-1):
-    print("amy_send:", osc, wave, patch, note, vel, amp, freq, filter_freq, resonance, bp0, bp1)
-    orig_amy_send(osc=osc, wave=wave, patch=patch, note=note, vel=vel, amp=amp, freq=freq, duty=duty, feedback=feedback, timestamp=timestamp, reset=reset, phase=phase, pan=pan, \
-                  client=client, retries=retries, volume=volume, filter_freq=filter_freq, resonance=resonance, bp0=bp0, bp1=bp1, bp2=bp2, bp0_target=bp0_target, bp1_target=bp1_target, bp2_target=bp2_target, mod_target=mod_target, \
-                  debug=debug, mod_source=mod_source, eq_l=eq_l, eq_m=eq_m, eq_h=eq_h, filter_type=filter_type, algorithm=algorithm, ratio=ratio, latency_ms=latency_ms, algo_source=algo_source, chorus_level=chorus_level, \
-                  chorus_delay=chorus_delay, reverb_level=reverb_level, reverb_liveness=reverb_liveness, reverb_damping=reverb_damping, reverb_xover=reverb_xover)
+def amy_send_patch(**kwargs):
+    print("amy_send:", kwargs)
+    orig_amy_send(**kwargs)
 
 # Apply the monkeypatch?
 #orig_amy_send = amy.send
@@ -191,9 +185,9 @@ OscSet = namedtuple("OscSet", "oscs bank rescind_fn")
 class OscSource:
     """Class that manages allocating oscillators arranged into banks,
        including stealing old allocs when we run out."""
-    TOTAL_OSCS = 64 # 48  # 64
-    NUM_USABLE_OSCS = 62
-    OSC_BLOCKING = 32  # Don't let sets of oscs straddle this.
+    TOTAL_OSCS = 120 # 48  # 64
+    NUM_USABLE_OSCS = 119
+    OSC_BLOCKING = 60  # Don't let sets of oscs straddle this.
 
     def __init__(self):
         self.available_oscs_by_bank = []
@@ -337,11 +331,11 @@ class NoteBase:
 
     @classmethod
     def broadcast_control_change(cls, control, value):
-        try:
-            for instance in cls.instances:
-                instance.control_change(control, value)
-        except:  # instance set not yet created?
-            pass
+        #try:
+        for instance in cls.instances:
+            instance.control_change(control, value)
+        #except:  # instance set not yet created?
+        #    pass
 
 
 class SimpleNote(NoteBase):
@@ -420,16 +414,76 @@ class FMNote(NoteBase):
     
     def note_on(self, midinote, vel):
         osc = self.oscs[0]
-        amy.send(osc=osc, wave=amy.ALGO, freq=5, patch=self.patch)
+        amy.send(osc=osc, wave=amy.ALGO, patch=self.patch)
         # Launch the note
         self.freq = C0_FREQ * math.pow(2, midinote / 12.)
-        amy.send(osc=osc, vel=vel, freq=self.freq  * current_pitch_bend())
+        #amy.send(osc=osc, vel=vel, freq=self.freq  * current_pitch_bend())
+        amy.send(osc=osc, vel=vel, note=midinote)
 
     def control_change(self, control, value):
         if control == 0:
             # Pitch bend factor has already been captured, just need to update.
             amy.send(osc=self.oscs[0], freq=self.freq * current_pitch_bend())
             
+
+NUM_CONTROLS = 128
+CONTROL_VALUES = [64] * NUM_CONTROLS
+
+# Oxygen49 slider IDs, starting from left.
+SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
+
+# Oxygen49 knobs, top row then second row.
+KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
+
+# Oxygen49 buttons.  They toggle between 0 and 0x7f.
+BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
+
+#import juno
+
+class JunoNote(NoteBase):
+    oscs_per_note = 5
+    release_time = 5.0
+    patch = 20
+    param_map = {
+        KNOB_IDS[0]: 'lfo_rate',
+        KNOB_IDS[1]: 'lfo_delay',
+        KNOB_IDS[2]: 'dco_lfo',
+        KNOB_IDS[3]: 'dco_pwm',
+        SLIDER_IDS[0]: 'dco_sub',
+        SLIDER_IDS[1]: 'dco_noise',
+        SLIDER_IDS[2]: 'vcf_freq',
+        SLIDER_IDS[3]: 'vcf_res',
+        KNOB_IDS[4]: 'vcf_env',
+        KNOB_IDS[5]: 'vcf_lfo',
+        KNOB_IDS[6]: 'vcf_kbd',
+        KNOB_IDS[7]: 'vca_level',
+        SLIDER_IDS[4]: 'env_a',
+        SLIDER_IDS[5]: 'env_d',
+        SLIDER_IDS[6]: 'env_s',
+        SLIDER_IDS[7]: 'env_r',
+        BUTTON_IDS[0]: 'pulse',
+        BUTTON_IDS[1]: 'saw',
+        BUTTON_IDS[2]: 'chorus',
+    }
+
+    def note_on(self, midinote, vel):
+        #self.junopatch = juno.JunoPatch.from_patch_number(self.patch)
+        self.juno_patch = JunoPatch.from_patch_number(self.patch)
+        self.juno_patch.init_AMY(*self.oscs)
+        amy.send(osc=self.oscs[0], note=midinote, vel=vel)
+
+    def control_change(self, control, value):
+        #print("osc", self.oscs[0], "control", control, "value", value)
+        value = value / 127.0
+        if control in self.param_map:
+            param_name = self.param_map[control]
+            # Special cases.
+            if param_name == 'pulse' or param_name == 'saw':
+                value = (value > 0)
+            if param_name == 'chorus':
+                value = 0 if value == 0 else 1
+            self.juno_patch.set_param(param_name, value)
+
 
 PITCH_BEND = 64  # default.
 
@@ -447,17 +501,6 @@ def current_pitch_bend():
     return math.pow(2, (PITCH_BEND - 64) / 128)
 
 
-NUM_CONTROLS = 128
-CONTROL_VALUES = [64] * NUM_CONTROLS
-
-# Oxygen49 slider IDs, starting from left.
-SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
-
-# Oxygen49 knobs, top row then second row.
-KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
-
-# Oxygen49 buttons.  They toggle between 0 and 0x7f.
-BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
 
 # Assignment of Juno-style controls
 EG0_ATTACK = SLIDER_IDS[0]
@@ -498,7 +541,7 @@ def midi_event_cb(x):
   """Callback that takes MIDI note on/off to create Note objects."""
   global KEYNOTES
   m = tulip.midi_in()
-  while m is not None:
+  while m is not None and len(m) > 0:
     #print("midi in: 0x%x 0x%x 0x%x" % (m[0], m[1], m[2]))
     if m[0] == 0x90:  # Note on.
       midinote = m[1]
@@ -521,7 +564,9 @@ def midi_event_cb(x):
       control_change(m[1], m[2])  # e.g.
         
     # Are there more events waiting?
-    m = tulip.midi_in()
+    m = m[3:]
+    if len(m) == 0:
+        m = tulip.midi_in()
 
 # Install the callback.
 tulip.midi_callback(midi_event_cb)
@@ -545,15 +590,13 @@ def notify_pitch_bend(bend):
     NoteClass.broadcast_control_change(0, bend);
     
 
-SYNTH_TYPE = 'dx7'
-#SYNTH_TYPE = 'juno'
+#SYNTH_TYPE = 'dx7'
+SYNTH_TYPE = 'juno'
 
 if SYNTH_TYPE == 'dx7':
     NoteClass = FMNote
 elif SYNTH_TYPE == 'juno':
-    NoteClass = SimpleNote
+    #NoteClass = SimpleNote
+    NoteClass = JunoNote
 else:
     raise ValueError('Unknown SYNTH_TYPE: ' + SYNTH_TYPE)
-
-
-
