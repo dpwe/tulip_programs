@@ -155,13 +155,12 @@ class Synth:
   def control_change(self, control, value):
     self.synth_source.control_change(control, value)
 
-
-NUM_VOICES = 8
-SYNTH = Synth(JunoPatch.from_patch_number(0), NUM_VOICES)
+midi_in_fn = None
+SYNTH = None
 
 def midi_event_cb(x):
   """Callback that takes MIDI note on/off to create Note objects."""
-  m = tulip.midi_in()
+  m = midi_in_fn()
   while m is not None and len(m) > 0:
     #print("midi in: 0x%x 0x%x 0x%x" % (m[0], m[1], m[2]))
     if m[0] == 0x90:  # Note on.
@@ -182,11 +181,20 @@ def midi_event_cb(x):
     # Are there more events waiting?
     m = m[3:]
     if len(m) == 0:
-        m = tulip.midi_in()
+        m = midi_in_fn()
 
 
-# Install the callback.
-tulip.midi_callback(midi_event_cb)
 
-amy.reset()
+def init(synth=None, my_midi_in_fn=None):
+  # Install the callback.
+  #tulip.midi_callback(midi_event_cb)
+  global midi_in_fn, SYNTH
+
+  midi_in_fn = my_midi_in_fn
     
+  #if not synth:
+  #    import juno
+  #    synth = juno.JunoPatch.from_patch_number(0)
+  
+  NUM_VOICES = 8
+  SYNTH = Synth(synth, NUM_VOICES)

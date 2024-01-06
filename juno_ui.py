@@ -108,6 +108,65 @@ class Slider(UIBase):
     self.set_val(tulip.ui_slider(id_))
 
 
+class ControlledLabel(UIBase):
+  """A label with some press-to-act buttons (e.g. + and -)."""
+  button_size = 16
+  button_space = 4
+  total_height = 40
+  total_width = 200
+  
+  def __init__(self, name, button_labels, callbacks, text):
+    super().__init__(name)
+    self.w = self.total_width
+    self.h = self.total_height
+    self.button_labels = button_labels
+    self.callbacks = callbacks
+    self.text = text
+    
+  def draw(self):
+    x = self.x
+    y = self.y
+    w = self.button_size
+    h = self.button_size
+    dh = self.button_space
+    self.ids = []
+    for tag in self.button_labels:
+      id_ = IdFactory.next_id()
+      tulip.ui_button(id_, tag, x, y, w, h, self.bg_color, self.text_color, False, self.body_font) 
+      
+      tulip.ui_active(id_, 1)
+      self.ids.append(id_)
+      register_callback(id_, self.callback)
+      y = y + h + dh
+    self.redraw_text()
+
+  def redraw_text(self):
+    # Label box
+    y = self.y
+    x = self.x + self.button_size + self.button_space
+    w = self.w - self.button_size - self.button_space
+    h = self.h
+    tulip.bg_rect(x, y, w, h, self.bg_color, True)
+    tulip.bg_str(self.text, x, y, self.text_color, self.body_font, w, h)
+    
+  def set_text(self, text):
+    self.text = text
+    self.redraw_text()
+
+  def callback(self, ui_id):
+    # Dispatch to provided per-button callbacks
+    for id_, callback in zip(self.ids, self.callbacks):
+      if ui_id == id_:
+        callback()
+
+  def press(self, button_text):
+    """Simulate a button press."""
+    for label, callback in zip(self.button_labels, self.callbacks):
+      if button_text == label:
+        callback()
+
+
+
 class ButtonSet(UIBase):
   y_top = 24
   y_txt = 0
@@ -132,10 +191,6 @@ class ButtonSet(UIBase):
     for tag in self.tags:
       self.state[tag] = False
 
-  def place(self, x, y):
-    self.x = x
-    self.y = y
-      
   def draw(self):
     x = self.x + self.padx
     y = self.y + self.y_txt
@@ -202,7 +257,7 @@ class OptionButtons(ButtonSet):
   def callback(self, ui_id):
     for id_, button_tag in zip(self.ids, self.tags):
       if ui_id == id_:
-        self.set_val(tag, tulip.ui_checkbox(id_))
+        self.set_val(button_tag, tulip.ui_checkbox(id_))
 
 
 class UIGroup(UIBase):
@@ -242,10 +297,51 @@ class UIGroup(UIBase):
       element.draw()
 
 
+def setup_from_patch(patch_number):
+  """Make the UI match the values in a JunoPatch."""
+  patch = juno.JunoPatch.from_patch_number(patch_number)
+  for el in ['lfo_rate', 'lfo_delay_time',
+             'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
+             'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd',
+             'vca_level', 'env_a', 'env_d', 'env_s', 'env_r']:
+    # globals()[el] is the (UI) object with that name
+    # getattr(patch, el) is that member of the patch object
+    globals()[el].set_val(getattr(patch, el))
+
+  dco_range.set_val("4'" if patch.stop_4 else "16'" if patch.stop_16 else "8'")
+  dco_pwm_mode.set_val('Man' if patch.pwm_manual else 'LFO')
+  dco_wave.set_val('Pulse', patch.pulse)
+  dco_wave.set_val('Saw', patch.saw)
+  hpf_freq.set_val(str(patch.hpf))
+  vcf_pol.set_val('Neg' if patch.vcf_neg else 'Pos')
+  vca_mode.set_val('Gate' if patch.vca_gate else 'Env')
+  chorus_mode.set_val(['Off', 'I', 'II', 'III'][patch.chorus])
+
+  return patch.name
+
+
+class PatchHolder:
+  patch_num = 0
+
+  def patch_up(self):
+    self.patch_num = (self.patch_num + 1) % 128
+    self.new_patch()
+
+  def patch_down(self):
+    self.patch_num = (self.patch_num + 127) % 128
+    self.new_patch()
+
+  def new_patch(self, patch_num=None):
+    if patch_num is not None:
+      self.patch_num = patch_num
+    patch_name = setup_from_patch(self.patch_num)
+    patch_selector.set_text(patch_name)
+
+
 import juno
 jp = juno.JunoPatch.from_patch_number(20)
 jp.init_AMY()
-alles.send(osc=0, note=60, vel=1)
+#alles.send(osc=0, note=60, vel=1)
 
 # Make the callback function.
 def jcb(arg):
@@ -309,29 +405,24 @@ chorus = UIGroup('CH', [chorus_mode])
 
 juno_ui = UIGroup('', [lfo, dco, hpf, vcf, vca, env, chorus])
 
+
+patch_holder = PatchHolder()
+patch_selector = ControlledLabel("PatchSel", ['+', '-'],
+                                 [patch_holder.patch_up, patch_holder.patch_down],
+                                 'initial text')
 # Juno UI
 tulip.bg_clear()
 
 juno_ui.place(10, 30)
 juno_ui.draw()
 
-def setup_from_patch(patch_number):
-  """Make the UI match the values in a JunoPatch."""
-  patch = juno.JunoPatch.from_patch_number(patch_number)
-  for el in ['lfo_rate', 'lfo_delay_time',
-             'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
-             'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd',
-             'vca_level', 'env_a', 'env_d', 'env_s', 'env_r']:
-    # globals()[el] is the (UI) object with that name
-    # getattr(patch, el) is that member of the patch object
-    globals()[el].set_val(getattr(patch, el))
+patch_selector.place(800, 20)
+patch_selector.draw()
+patch_selector.press('+')
 
-  dco_range.set_val("4'" if patch.stop_4 else "16'" if patch.stop_16 else "8'")
-  dco_pwm_mode.set_val('Man' if patch.pwm_manual else 'LFO')
-  dco_wave.set_val('Pulse', patch.pulse)
-  dco_wave.set_val('Saw', patch.saw)
-  hpf_freq.set_val(str(patch.hpf))
-  vcf_pol.set_val('Neg' if patch.vcf_neg else 'Pos')
-  vca_mode.set_val('Gate' if patch.vca_gate else 'Env')
-  chorus_mode.set_val(['Off', 'I', 'II', 'III'][patch.chorus])
 
+# Start the polyvoice
+import polyvoice
+
+polyvoice.init(jp, tulip.midi_in)
+tulip.midi_callback(polyvoice.midi_event_cb)

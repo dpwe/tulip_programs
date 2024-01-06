@@ -132,6 +132,46 @@ def ffmt(val):
   return "%.5g" % float("%.3f" % val)
 
 
+_PATCHES = None
+def get_juno_patch(patch_number):
+  # json was created by:
+  # import javaobj, json
+  # pobj = javaobj.load(open('juno106_factory_patches.ser', 'rb'))
+  # patches = [(p.name, list(p.sysex)) for p in pobj.v.elementData if p is not None]
+  # with open('juno106patches.json', 'w') as f:
+  #   f.write(json.dumps(patches))
+  #pobj = javaobj.load(open('juno106_factory_patches.ser', 'rb'))
+  #patch = pobj.v.elementData[patch_number]
+  global _PATCHES
+  if not _PATCHES:
+    with open('juno106patches.json', 'r') as f:
+      _PATCHES = json.load(f)
+  name, sysex = _PATCHES[patch_number]
+  return name, bytes(sysex)
+
+
+class NoteObj:
+  """Object to receive note_on(note, velocity) messages."""
+
+  def __init__(self, osc):
+    self.osc = osc
+
+  def note_on(self, note, velocity):
+    self.note = note
+    amy.send(osc=self.osc, note=note, vel=velocity)
+
+  def note_off(self):
+    amy.send(osc=self.osc, vel=0)
+
+
+# Oxygen49 slider IDs, starting from left.
+SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
+# Oxygen49 knobs, top row then second row.
+KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
+# Oxygen49 buttons.  They toggle between 0 and 0x7f.
+BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
+
+
 class JunoPatch:
   """Encapsulates information in a Juno Patch."""
   name = ""
@@ -177,22 +217,17 @@ class JunoPatch:
   BITS1 = ['stop_16', 'stop_8', 'stop_4', 'pulse', 'saw']
   BITS2 = ['pwm_manual', 'vcf_neg', 'vca_gate']
 
+  # Attributes for voice management.
+  next_osc = 0
+  # How many AMY oscs are used per voice?
+  oscs_per_voice = 5
+  # List of base_oscs for allocated voices.
+  base_oscs = []
+
   @staticmethod
   def from_patch_number(patch_number):
-    # json was created by:
-    # import javaobj, json
-    # pobj = javaobj.load(open('juno106_factory_patches.ser', 'rb'))
-    # patches = [(p.name, list(p.sysex)) for p in pobj.v.elementData if p is not None]
-    # with open('juno106patches.json', 'w') as f:
-    #   f.write(json.dumps(patches))
-    #pobj = javaobj.load(open('juno106_factory_patches.ser', 'rb'))
-    #patch = pobj.v.elementData[patch_number]
-    with open('juno106patches.json', 'r') as f:
-      patches = json.load(f)
-    patch = patches[patch_number]
-    p = JunoPatch.from_sysex(bytes(patch[1]))
-    p.name = patch[0]
-    return p
+    name, sysexbytes = get_juno_patch(patch_number)
+    return JunoPatch.from_sysex(sysexbytes, name)
 
   @classmethod
   def from_sysex(cls, sysexbytes, name=None):
@@ -200,20 +235,27 @@ class JunoPatch:
     assert len(sysexbytes) == 18
     result = JunoPatch()
     result.name = name
-    # The first 16 bytes are sliders.
-    for index, field in enumerate(cls.FIELDS):
-      setattr(result, field, int(sysexbytes[index])/127.0)
-    # Then there are two bytes of switches.
-    for index, field in enumerate(cls.BITS1):
-      setattr(result, field, (int(sysexbytes[16]) & (1 << index)) > 0)
-    # Chorus has a weird mapping.  Bit 5 is ~Chorus, bit 6 is ChorusI-notII
-    setattr(result, 'chorus', [2, 0, 1, 0][int(sysexbytes[16]) >> 5])
-    for index, field in enumerate(cls.BITS2):
-      setattr(result, field, (int(sysexbytes[17]) & (1 << index)) > 0)
-    # Bits 3 & 4 also have flipped endianness & sense.
-    setattr(result, 'hpf', [3, 2, 1, 0][int(sysexbytes[17]) >> 3])
+    result._init_from_sysex(sysexbytes)
     return result
 
+  def _init_from_patch_number(self, patch_number):
+    self.name, sysexbytes = get_juno_patch(patch_number)
+    self._init_from_sysex(sysexbytes)
+  
+  def _init_from_sysex(self, sysexbytes):
+    # The first 16 bytes are sliders.
+    for index, field in enumerate(self.FIELDS):
+      setattr(self, field, int(sysexbytes[index])/127.0)
+    # Then there are two bytes of switches.
+    for index, field in enumerate(self.BITS1):
+      setattr(self, field, (int(sysexbytes[16]) & (1 << index)) > 0)
+    # Chorus has a weird mapping.  Bit 5 is ~Chorus, bit 6 is ChorusI-notII
+    setattr(self, 'chorus', [2, 0, 1, 0][int(sysexbytes[16]) >> 5])
+    for index, field in enumerate(self.BITS2):
+      setattr(self, field, (int(sysexbytes[17]) & (1 << index)) > 0)
+    # Bits 3 & 4 also have flipped endianness & sense.
+    setattr(self, 'hpf', [3, 2, 1, 0][int(sysexbytes[17]) >> 3])
+  
   def _breakpoint_string(self):
     """Format a breakpoint string from the ADSR parameters reaching a peak."""
     return "%d,%s,%d,%s,%d,0" % (
@@ -221,9 +263,9 @@ class JunoPatch:
       ffmt(to_level(self.env_s)), to_release_time(self.env_r)
     )
 
-  def init_AMY(self, base_osc=0, saw_osc=None, sub_osc=None, nse_osc=None, lfo_osc=None):
-    """Output AMY commands to set up the patch.
-    Send amy.send(osc=<base_osc + 1>, note=50, vel=1) afterwards."""
+  def init_AMY(self):
+    """Output AMY commands to set up patches on all the allocated voices.
+    Send amy.send(osc=base_osc, note=50, vel=1) afterwards."""
     #amy.reset()
     # base_osc is pulse/PWM
     # base_osc + 1 is SAW
@@ -232,23 +274,24 @@ class JunoPatch:
     # base_osc + 4 is LFO
     #   env0 is VCA
     #   env1 is VCF
-    self.pwm_osc = base_osc
-    self.saw_osc = saw_osc if saw_osc is not None else base_osc + 1
-    self.sub_osc = sub_osc if sub_osc is not None else base_osc + 2
-    self.nse_osc = nse_osc if nse_osc is not None else base_osc + 3
-    self.lfo_osc = lfo_osc if lfo_osc is not None else base_osc + 4
+    # These are offsets from the base_oscs[].
+    self.pwm_osc = 0
+    self.saw_osc = 1
+    self.sub_osc = 2
+    self.nse_osc = 3
+    self.lfo_osc = 4
     self.voice_oscs = [self.pwm_osc, self.saw_osc, self.sub_osc, self.nse_osc]
     
     # One-time args to oscs.
-    amy.send(osc=self.lfo_osc, wave=amy.TRIANGLE, amp='1,0,0,1,0,0')
+    self.amy_send(osc=self.lfo_osc, wave=amy.TRIANGLE, amp='1,0,0,1,0,0')
     osc_setup = {'filter_type': amy.FILTER_LPF24, 'mod_source': self.lfo_osc}
     for osc in self.voice_oscs:
-      amy.send(osc=osc, **osc_setup)
+      self.amy_send(osc=osc, **osc_setup)
     # Setup chained_oscs
-    amy.send(osc=self.pwm_osc, wave=amy.PULSE, chained_osc=self.sub_osc)
-    amy.send(osc=self.sub_osc, wave=amy.PULSE, chained_osc=self.saw_osc)
-    amy.send(osc=self.saw_osc, wave=amy.SAW_UP, chained_osc=self.nse_osc)
-    amy.send(osc=self.nse_osc, wave=amy.NOISE)
+    self.amy_send(osc=self.pwm_osc, wave=amy.PULSE, chained_osc=self.sub_osc)
+    self.amy_send(osc=self.sub_osc, wave=amy.PULSE, chained_osc=self.saw_osc)
+    self.amy_send(osc=self.saw_osc, wave=amy.SAW_UP, chained_osc=self.nse_osc)
+    self.amy_send(osc=self.nse_osc, wave=amy.NOISE)
     # Setup all the variable params.
     self.update_lfo()
     self.update_dco()
@@ -259,7 +302,7 @@ class JunoPatch:
   def update_lfo(self):
     lfo_args = {'freq': to_lfo_freq(self.lfo_rate),
                 'bp0': '%i,1.0,%i,1.0,10000,0' % (to_lfo_delay(self.lfo_delay_time), to_lfo_delay(self.lfo_delay_time))}
-    amy.send(osc=self.lfo_osc, **lfo_args)
+    self.amy_send(osc=self.lfo_osc, **lfo_args)
 
   def update_dco(self):
     # Only one of stop_{16,8,4} should be set.
@@ -281,26 +324,26 @@ class JunoPatch:
     if self.pwm_manual:
       # Swap duty parameters.
       const_duty, lfo_duty = lfo_duty, const_duty
-    amy.send(osc=self.pwm_osc,
+    self.amy_send(osc=self.pwm_osc,
              amp=_amp_coef_string(float(self.pulse)),
              freq=_freq_coef_string(base_freq),
              duty='%s,0,0,0,0,%s' % (ffmt(0.5 + 0.5 * const_duty), ffmt(0.5 * lfo_duty)))
     # saw
-    amy.send(osc=self.saw_osc,
+    self.amy_send(osc=self.saw_osc,
              amp=_amp_coef_string(float(self.saw)),
              freq=_freq_coef_string(base_freq))
     # sub wave.
-    amy.send(osc=self.sub_osc,
+    self.amy_send(osc=self.sub_osc,
              amp=_amp_coef_string(self.dco_sub),
              freq=_freq_coef_string(base_freq / 2.0))
     # noise.
-    amy.send(osc=self.nse_osc,
+    self.amy_send(osc=self.nse_osc,
              amp=_amp_coef_string(self.dco_noise))
 
   def update_vcf(self):
     vcf_env_polarity = -1.0 if self.vcf_neg else 1.0
     for osc in self.voice_oscs:
-      amy.send(osc=osc, resonance=to_resonance(self.vcf_res),
+      self.amy_send(osc=osc, resonance=to_resonance(self.vcf_res),
                filter_freq='%s,%s,0,0,%s,%s' % (
                  ffmt(to_filter_freq(self.vcf_freq)),
                  ffmt(to_level(self.vcf_kbd)),
@@ -314,7 +357,7 @@ class JunoPatch:
     else:
       bp0_coefs = self._breakpoint_string()
     for osc in self.voice_oscs:
-      amy.send(osc=osc, bp0=bp0_coefs, bp1=bp1_coefs)
+      self.amy_send(osc=osc, bp0=bp0_coefs, bp1=bp1_coefs)
 
   def update_cho(self):
     # Chorus & HPF
@@ -329,9 +372,10 @@ class JunoPatch:
       eq_l = -15
       eq_m = 8
       eq_h = 8
-    amy.send(eq_l=eq_l, eq_m=eq_m, eq_h=eq_h)
-
-    chorus_args = {'chorus_level': float(self.chorus)}
+    chorus_args = {
+      'eq_l': eq_l, 'eq_m': eq_m, 'eq_h': eq_h,
+      'chorus_level': float(self.chorus)
+    }
     if self.chorus:
       chorus_args['osc'] = amy.CHORUS_OSC
       chorus_args['amp'] = 0.5
@@ -342,11 +386,71 @@ class JunoPatch:
       elif self.chorus == 3:
         chorus_args['freq'] = 0.83
         chorus_args['amp'] = 0.05
+    #self.amy_send(osc=amy.CHORUS_OSC, **chorus_args)
+    # *Don't* repeat for all the notes, these ones are global.
     amy.send(**chorus_args)
-
+    
   # Setters for each Juno UI control
   def set_param(self, param, val):
     setattr(self, param,  val)
     for group, params in self.post_set_fn.items():
       if param in params:
         getattr(self, 'update_' + group)()
+
+  def amy_send(self, osc, **kwargs):
+    offset_args = dict(kwargs)
+    for base_osc in self.base_oscs:
+      for osc_arg in ['mod_source', 'chained_osc']:
+        if osc_arg in kwargs:
+          offset_args[osc_arg] = kwargs[osc_arg] + base_osc
+      amy.send(osc=base_osc + osc, **offset_args)
+
+  def get_new_voices(self, num_voices):
+    """Setup a bunch of secondary voices."""
+    note_objs = []
+    for voice_num in range(num_voices):
+      base_osc = self.next_osc
+      self.next_osc += self.oscs_per_voice
+      self.base_oscs.append(base_osc)
+      note_objs.append(NoteObj(base_osc))
+    self.init_AMY()
+    return note_objs
+
+  param_map = {
+    KNOB_IDS[0]: 'lfo_rate',
+    KNOB_IDS[1]: 'lfo_delay',
+    KNOB_IDS[2]: 'dco_lfo',
+    KNOB_IDS[3]: 'dco_pwm',
+    SLIDER_IDS[0]: 'dco_sub',
+    SLIDER_IDS[1]: 'dco_noise',
+    SLIDER_IDS[2]: 'vcf_freq',
+    SLIDER_IDS[3]: 'vcf_res',
+    KNOB_IDS[4]: 'vcf_env',
+    KNOB_IDS[5]: 'vcf_lfo',
+    KNOB_IDS[6]: 'vcf_kbd',
+    KNOB_IDS[7]: 'vca_level',
+    SLIDER_IDS[4]: 'env_a',
+    SLIDER_IDS[5]: 'env_d',
+    SLIDER_IDS[6]: 'env_s',
+    SLIDER_IDS[7]: 'env_r',
+    BUTTON_IDS[0]: 'pulse',
+    BUTTON_IDS[1]: 'saw',
+    BUTTON_IDS[2]: 'chorus',
+  }
+
+  def control_change(self, control, value):
+    #print("osc", self.oscs[0], "control", control, "value", value)
+    value = value / 127.0
+    if control in self.param_map:
+      param_name = self.param_map[control]
+      # Special cases.
+      if param_name == 'pulse' or param_name == 'saw':
+        value = (value > 0)
+      elif param_name == 'chorus':
+        value = 0 if value == 0 else 1
+      self.set_param(param_name, value)
+
+  def set_patch(self, patch):
+    self._init_from_patch_number(patch)
+    print("New patch", patch, ":", self.name)
+    self.init_AMY()
