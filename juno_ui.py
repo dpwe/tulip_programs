@@ -322,20 +322,20 @@ def setup_from_patch(patch_number):
 
 class PatchHolder:
   patch_num = 0
-
+  patch_selector = None
+  
   def patch_up(self):
-    self.patch_num = (self.patch_num + 1) % 128
-    self.new_patch()
+    self.set_val((self.patch_num + 1) % 128)
 
   def patch_down(self):
-    self.patch_num = (self.patch_num + 127) % 128
+    self.set_val((self.patch_num + 127) % 128)
     self.new_patch()
 
-  def new_patch(self, patch_num=None):
-    if patch_num is not None:
-      self.patch_num = patch_num
+  def set_val(self, val):
+    self.patch_num = val
     patch_name = setup_from_patch(self.patch_num)
-    patch_selector.set_text(patch_name)
+    if self.patch_selector:
+      self.patch_selector.set_text(patch_name)
 
 
 import juno
@@ -410,6 +410,62 @@ patch_holder = PatchHolder()
 patch_selector = ControlledLabel("PatchSel", ['+', '-'],
                                  [patch_holder.patch_up, patch_holder.patch_down],
                                  'initial text')
+patch_holder.patch_selector = patch_selector
+
+# Wire up MIDI controls
+
+# Oxygen49 slider IDs, starting from left.
+#SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
+SLIDER_IDS = [74, 71, 91, 93, 73, 72, 5, 84, 7]
+# Oxygen49 knobs, top row then second row.
+#KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
+KNOB_IDS = [75, 76, 92, 95, 10, 77, 78, 79]
+# Oxygen49 buttons.  They toggle between 0 and 0x7f.
+#BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
+BUTTON_IDS = [50, 51, 52, 53, 54, 55]
+
+param_map = {
+    KNOB_IDS[0]: 'lfo_rate',
+    KNOB_IDS[1]: 'lfo_delay_time',
+    KNOB_IDS[2]: 'dco_lfo',
+    KNOB_IDS[3]: 'dco_pwm',
+    SLIDER_IDS[0]: 'dco_sub',
+    SLIDER_IDS[1]: 'dco_noise',
+    SLIDER_IDS[2]: 'vcf_freq',
+    SLIDER_IDS[3]: 'vcf_res',
+    KNOB_IDS[4]: 'vcf_env',
+    KNOB_IDS[5]: 'vcf_lfo',
+    KNOB_IDS[6]: 'vcf_kbd',
+    KNOB_IDS[7]: 'vca_level',
+    SLIDER_IDS[4]: 'env_a',
+    SLIDER_IDS[5]: 'env_d',
+    SLIDER_IDS[6]: 'env_s',
+    SLIDER_IDS[7]: 'env_r',
+    BUTTON_IDS[0]: 'Pulse',
+    BUTTON_IDS[1]: 'Saw',
+    BUTTON_IDS[2]: 'chorus_mode',
+}
+
+def control_change(control, value):
+  #print("juno_ui control_change: control", control, "value", value)
+  if control in SLIDER_IDS:
+    # Sliders are max at bottom, weirdly
+    value = 127 - value
+  value = value / 127.0
+  if control in param_map:
+    param_name = param_map[control]
+    # Special cases.
+    if param_name == 'Pulse' or param_name == 'Saw':
+      dco_wave.set_val(param_name, value != 0)
+      return  # Early exit.
+    elif param_name == 'chorus_mode':
+      value = 'Off' if value == 0 else 'I'
+    #jp.set_param(param_name, value)
+    globals()[param_name].set_val(value)
+
+
+
+
 # Juno UI
 tulip.bg_clear()
 
@@ -418,11 +474,12 @@ juno_ui.draw()
 
 patch_selector.place(800, 20)
 patch_selector.draw()
-patch_selector.press('+')
+patch_holder.set_val(0)
 
 
 # Start the polyvoice
 import polyvoice
 
-polyvoice.init(jp, tulip.midi_in)
+polyvoice.init(jp, tulip.midi_in, control_change, patch_holder.set_val)
 tulip.midi_callback(polyvoice.midi_event_cb)
+

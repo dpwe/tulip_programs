@@ -156,6 +156,8 @@ class Synth:
     self.synth_source.control_change(control, value)
 
 midi_in_fn = None
+control_change_fn = None
+set_patch_fn = None
 SYNTH = None
 
 def midi_event_cb(x):
@@ -172,11 +174,11 @@ def midi_event_cb(x):
       midinote = m[1]
       SYNTH.note_off(midinote)
     elif m[0] == 0xc0:  # Program change - choose the DX7 preset
-      SYNTH.set_patch(m[1])
+      set_patch_fn(m[1])
     elif m[0] == 0xe0:  # Pitch bend.
-      SYNTH.control_change(0, m[2])
+      control_change_fn(0, m[2])
     elif m[0] == 0xb0:  # Other control slider.
-      SYNTH.control_change(m[1], m[2])
+      control_change_fn(m[1], m[2])
         
     # Are there more events waiting?
     m = m[3:]
@@ -185,12 +187,14 @@ def midi_event_cb(x):
 
 
 
-def init(synth=None, my_midi_in_fn=None):
+def init(synth=None, my_midi_in_fn=None, my_control_change_fn=None, my_set_patch_fn=None):
   # Install the callback.
   #tulip.midi_callback(midi_event_cb)
-  global midi_in_fn, SYNTH
+  global midi_in_fn, control_change_fn, set_patch_fn, SYNTH
 
   midi_in_fn = my_midi_in_fn
+  control_change_fn = my_control_change_fn
+  set_patch_fn = my_set_patch_fn
     
   #if not synth:
   #    import juno

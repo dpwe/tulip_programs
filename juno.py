@@ -164,14 +164,6 @@ class NoteObj:
     amy.send(osc=self.osc, vel=0)
 
 
-# Oxygen49 slider IDs, starting from left.
-SLIDER_IDS = [0x5b, 0x5d, 0x46, 0x47, 0x73, 0x74, 0x75, 0x76, 0x7]
-# Oxygen49 knobs, top row then second row.
-KNOB_IDS = [0x11, 0x1a, 0x1c, 0x1e, 0x1b, 0x1d, 0xd, 0x4c]
-# Oxygen49 buttons.  They toggle between 0 and 0x7f.
-BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
-
-
 class JunoPatch:
   """Encapsulates information in a Juno Patch."""
   name = ""
@@ -415,40 +407,6 @@ class JunoPatch:
       note_objs.append(NoteObj(base_osc))
     self.init_AMY()
     return note_objs
-
-  param_map = {
-    KNOB_IDS[0]: 'lfo_rate',
-    KNOB_IDS[1]: 'lfo_delay',
-    KNOB_IDS[2]: 'dco_lfo',
-    KNOB_IDS[3]: 'dco_pwm',
-    SLIDER_IDS[0]: 'dco_sub',
-    SLIDER_IDS[1]: 'dco_noise',
-    SLIDER_IDS[2]: 'vcf_freq',
-    SLIDER_IDS[3]: 'vcf_res',
-    KNOB_IDS[4]: 'vcf_env',
-    KNOB_IDS[5]: 'vcf_lfo',
-    KNOB_IDS[6]: 'vcf_kbd',
-    KNOB_IDS[7]: 'vca_level',
-    SLIDER_IDS[4]: 'env_a',
-    SLIDER_IDS[5]: 'env_d',
-    SLIDER_IDS[6]: 'env_s',
-    SLIDER_IDS[7]: 'env_r',
-    BUTTON_IDS[0]: 'pulse',
-    BUTTON_IDS[1]: 'saw',
-    BUTTON_IDS[2]: 'chorus',
-  }
-
-  def control_change(self, control, value):
-    #print("osc", self.oscs[0], "control", control, "value", value)
-    value = value / 127.0
-    if control in self.param_map:
-      param_name = self.param_map[control]
-      # Special cases.
-      if param_name == 'pulse' or param_name == 'saw':
-        value = (value > 0)
-      elif param_name == 'chorus':
-        value = 0 if value == 0 else 1
-      self.set_param(param_name, value)
 
   def set_patch(self, patch):
     self._init_from_patch_number(patch)
