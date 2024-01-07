@@ -390,12 +390,25 @@ class JunoPatch:
         getattr(self, 'update_' + group)()
 
   def amy_send(self, osc, **kwargs):
-    offset_args = dict(kwargs)
-    for base_osc in self.base_oscs:
+    if self.base_oscs:
+      offset_args = dict(kwargs)
+      # Apply configuration in full to first osc.
+      base_osc = self.base_oscs[0]
+      proto_osc = base_osc + osc
       for osc_arg in ['mod_source', 'chained_osc']:
         if osc_arg in kwargs:
           offset_args[osc_arg] = kwargs[osc_arg] + base_osc
-      amy.send(osc=base_osc + osc, **offset_args)
+      amy.send(osc=proto_osc, **offset_args)
+      # Simply clone the corresponding oscs from other voices.
+      for base_osc in self.base_oscs[1:]:
+        target_osc = base_osc + osc
+        amy.send(osc=target_osc, clone_osc=proto_osc)
+        fixup_args = {}
+        for osc_arg in ['mod_source', 'chained_osc']:
+          if osc_arg in kwargs:
+            fixup_args[osc_arg] = kwargs[osc_arg] + base_osc
+        if fixup_args:
+          amy.send(osc=target_osc, **fixup_args)
 
   def get_new_voices(self, num_voices):
     """Setup a bunch of secondary voices."""
