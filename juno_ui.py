@@ -132,7 +132,7 @@ class ControlledLabel(UIBase):
     self.ids = []
     for tag in self.button_labels:
       id_ = IdFactory.next_id()
-      tulip.ui_button(id_, tag, x, y, w, h, self.bg_color, self.text_color, False, self.body_font) 
+      tulip.ui_button(id_, tag, x, y, w, h, self.text_color, self.bg_color, False, self.body_font) 
       
       tulip.ui_active(id_, 1)
       self.ids.append(id_)
@@ -164,7 +164,6 @@ class ControlledLabel(UIBase):
     for label, callback in zip(self.button_labels, self.callbacks):
       if button_text == label:
         callback()
-
 
 
 class ButtonSet(UIBase):
@@ -329,7 +328,6 @@ class PatchHolder:
 
   def patch_down(self):
     self.set_val((self.patch_num + 127) % 128)
-    self.new_patch()
 
   def set_val(self, val):
     self.patch_num = val
