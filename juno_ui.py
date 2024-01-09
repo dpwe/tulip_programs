@@ -369,7 +369,8 @@ dco = UIGroup('DCO', [dco_range, dco_lfo, dco_pwm, dco_pwm_mode, dco_wave, dco_s
 
 #hpf_freq = Slider('Freq', jcb('hpf'))
 def hpf(n):
-  callback = lambda x: jp.set_param('hpf', n) if x else None
+  global juno_patch_from_midi_channel, midi_channel  
+  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param('hpf', n) if x else None
   return callback
   
 hpf_freq = RadioButton('Freq', ['3', '2', '1', '0'],
@@ -398,7 +399,8 @@ env_r = Slider('R', jcb('env_r'))
 env = UIGroup('ENV', [env_a, env_d, env_s, env_r])
 
 def cho(n):
-  callback = lambda x: jp.set_param('chorus', n) if x else None
+  global juno_patch_from_midi_channel, midi_channel
+  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param('chorus', n) if x else None
   return callback
 
 chorus_mode = RadioButton('Mode', ['Off', 'I', 'II', 'III'],
@@ -432,8 +434,10 @@ def setup_from_patch(patch):
 
 
 def setup_from_patch_number(patch_number):
-  return setup_from_patch(juno.JunoPatch.from_patch_number(patch_number))
-
+  global midi_channel, juno_patch_from_midi_channel
+  juno_patch_from_midi_channel[midi_channel].patch_number = patch_number
+  juno_patch_from_midi_channel[midi_channel].name = setup_from_patch(juno.JunoPatch.from_patch_number(patch_number))
+  return juno_patch_from_midi_channel[midi_channel].name
 
 def setup_from_midi_chan(new_midi_channel):
   """Switch which JunoPatch we display based on MIDI channel."""
@@ -519,6 +523,6 @@ midi_selector.draw()
 # Start the polyvoice
 import polyvoice
 
-polyvoice.init(jp, tulip.midi_in, control_change, patch_selector.set_value)
+polyvoice.init(juno_patch_from_midi_channel[midi_channel], tulip.midi_in, control_change, patch_selector.set_value)
 tulip.midi_callback(polyvoice.midi_event_cb)
 
