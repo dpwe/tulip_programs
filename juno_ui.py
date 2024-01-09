@@ -40,6 +40,8 @@ class UIBase:
   body_font = 8
   text_height = 12
   title_font = 5
+  # Indicates that UI elements have been created.
+  drawn = False
   
   def __init__(self, name="<none>"):
     self.name = name
@@ -55,6 +57,7 @@ class UIBase:
     tulip.bg_str(self.title, self.x, self.y + self.text_height,
                  self.text_color, self.title_font, 
                  self.w, 2 * self.text_height)
+    self.drawn = True
 
 
 class Slider(UIBase):
@@ -63,7 +66,7 @@ class Slider(UIBase):
   h_sli = 200
   y_txt = 0
   y_val = 235
-  val = 0
+  value = 0
   padx = 15
   w_leg = 26
   
@@ -75,7 +78,7 @@ class Slider(UIBase):
     self.h = self.y_val + 2 * self.text_height
 
   def draw(self):
-    tulip.ui_slider(self.id_, self.val,
+    tulip.ui_slider(self.id_, self.value,
                     self.x + self.w_leg,
                     self.y + self.y_sli, self.w_sli, self.h_sli,
                     self.fg_color, self.bg_color)
@@ -90,35 +93,35 @@ class Slider(UIBase):
       tulip.bg_str(str(10 - i), self.x - self.padx + self.w_leg,
                    self.y + self.y_sli - (self.text_height - thumb_height) // 2 + (i * self.h_sli) // 11,
                    self.text_color, self.body_font, self.padx, self.text_height)
-    self.set_val(self.val)
+    self.drawn = True
+    self.set_value(self.value)
     
-  def set_val(self, v):
-    self.val = v
-    x = self.x + self.w_leg - self.padx
-    y = self.y + self.y_val - self.text_height // 2
-    w = 2 * self.padx
-    h = self.text_height
-    tulip.bg_rect(x, y, w, h, self.bg_color, True)
-    tulip.bg_str("%.2f" % self.val, x, y, self.text_color, self.body_font, w, h)
-    tulip.ui_slider(self.id_, self.val)
+  def set_value(self, v):
+    self.value = v
+    if (self.drawn):
+      x = self.x + self.w_leg - self.padx
+      y = self.y + self.y_val - self.text_height // 2
+      w = 2 * self.padx
+      h = self.text_height
+      tulip.bg_rect(x, y, w, h, self.bg_color, True)
+      tulip.bg_str("%.2f" % self.value, x, y, self.text_color, self.body_font, w, h)
+      tulip.ui_slider(self.id_, self.value)
     if self.value_callback_fn is not None:
-      self.value_callback_fn(self.val)
+      self.value_callback_fn(self.value)
 
   def callback(self, id_):
-    self.set_val(tulip.ui_slider(id_))
+    self.set_value(tulip.ui_slider(id_))
 
 
 class ControlledLabel(UIBase):
   """A label with some press-to-act buttons (e.g. + and -)."""
   button_size = 16
   button_space = 4
-  total_height = 40
-  total_width = 200
   
-  def __init__(self, name, button_labels, callbacks, text):
+  def __init__(self, name, button_labels, callbacks, text, width=200, height=40):
     super().__init__(name)
-    self.w = self.total_width
-    self.h = self.total_height
+    self.w = width
+    self.h = height
     self.button_labels = button_labels
     self.callbacks = callbacks
     self.text = text
@@ -211,6 +214,8 @@ class ButtonSet(UIBase):
       register_callback(id_, self.callback)
       y = y + (self.y_spacing - self.text_height)
 
+    self.drawn = True
+
 
 class RadioButton(ButtonSet):
 
@@ -218,7 +223,7 @@ class RadioButton(ButtonSet):
     # checkbox_style: 0 is filled box, 1 is X, 2 is filled circle
     super().__init__(name, tags, callbacks, 2)
   
-  def set_val(self, tag):
+  def set_value(self, tag):
     for id_, button_tag in zip(self.ids, self.tags):
       if button_tag == tag:
         tulip.ui_checkbox(id_, True)
@@ -233,7 +238,7 @@ class RadioButton(ButtonSet):
     # RadioButton deselects all other buttons.
     for id_, button_tag in zip(self.ids, self.tags):
       if ui_id == id_:
-        self.set_val(button_tag)
+        self.set_value(button_tag)
         
 
 class OptionButtons(ButtonSet):
@@ -245,18 +250,18 @@ class OptionButtons(ButtonSet):
     for id_, tag in zip(self.ids, self.tags):
       self.state[tag] = False
   
-  def set_val(self, tag, val):
+  def set_value(self, tag, value):
     for id_, button_tag in zip(self.ids, self.tags):
       if button_tag == tag:
-        tulip.ui_checkbox(id_, val)
-        self.state[button_tag] = val
+        tulip.ui_checkbox(id_, value)
+        self.state[button_tag] = value
       if self.value_callback_fns[button_tag] is not None:
         self.value_callback_fns[button_tag](self.state[button_tag])
 
   def callback(self, ui_id):
     for id_, button_tag in zip(self.ids, self.tags):
       if ui_id == id_:
-        self.set_val(button_tag, tulip.ui_checkbox(id_))
+        self.set_value(button_tag, tulip.ui_checkbox(id_))
 
 
 class UIGroup(UIBase):
@@ -296,54 +301,54 @@ class UIGroup(UIBase):
       element.draw()
 
 
-def setup_from_patch(patch_number):
-  """Make the UI match the values in a JunoPatch."""
-  patch = juno.JunoPatch.from_patch_number(patch_number)
-  for el in ['lfo_rate', 'lfo_delay_time',
-             'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
-             'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd',
-             'vca_level', 'env_a', 'env_d', 'env_s', 'env_r']:
-    # globals()[el] is the (UI) object with that name
-    # getattr(patch, el) is that member of the patch object
-    globals()[el].set_val(getattr(patch, el))
-
-  dco_range.set_val("4'" if patch.stop_4 else "16'" if patch.stop_16 else "8'")
-  dco_pwm_mode.set_val('Man' if patch.pwm_manual else 'LFO')
-  dco_wave.set_val('Pulse', patch.pulse)
-  dco_wave.set_val('Saw', patch.saw)
-  hpf_freq.set_val(str(patch.hpf))
-  vcf_pol.set_val('Neg' if patch.vcf_neg else 'Pos')
-  vca_mode.set_val('Gate' if patch.vca_gate else 'Env')
-  chorus_mode.set_val(['Off', 'I', 'II', 'III'][patch.chorus])
-
-  return patch.name
-
-
-class PatchHolder:
-  patch_num = 0
-  patch_selector = None
+class Spinbox(ControlledLabel):
+  value = 0
+  min_value = 0
+  max_value = 127
+  set_fn = None
   
-  def patch_up(self):
-    self.set_val((self.patch_num + 1) % 128)
+  def __init__(self, set_fn, initial_text='', min_value=0, max_value=127, initial_value=0, **kwargs):
+    self.set_fn = set_fn  # called when value changes, returns text to display.
+    self.min_value = min_value
+    self.max_value = max_value
+    super().__init__('Spinbox', ['+', '-'],
+                     [self.value_up, self.value_down],
+                     initial_text, **kwargs)
+    self.set_value(initial_value)
 
-  def patch_down(self):
-    self.set_val((self.patch_num + 127) % 128)
+  def value_delta(self, increment=1):
+    value_range = self.max_value - self.min_value + 1
+    self.value = self.min_value + ((self.value - self.min_value + increment) % value_range)
+    self.set_value(self.value)
 
-  def set_val(self, val):
-    self.patch_num = val
-    patch_name = setup_from_patch(self.patch_num)
-    if self.patch_selector:
-      self.patch_selector.set_text(patch_name)
+  def value_up(self):
+    self.value_delta(1)
+
+  def value_down(self):
+    self.value_delta(-1)
+
+  def set_value(self, value):
+    self.value = value
+    self.name = self.set_fn(self.value)
+    self.set_text(self.name)
 
 
 import juno
-jp = juno.JunoPatch.from_patch_number(20)
-jp.init_AMY()
+midi_channel = 0
+juno_patch_from_midi_channel = [juno.JunoPatch.from_patch_number(i) for i in range(16)]
+
+juno_patch_from_midi_channel[midi_channel].init_AMY()
+
+
+#jp = juno.JunoPatch.from_patch_number(20)
+#jp.init_AMY()
 #alles.send(osc=0, note=60, vel=1)
 
 # Make the callback function.
 def jcb(arg):
-  callback = lambda x: jp.set_param(arg, x)
+  global juno_patch_from_midi_channel, midi_channel
+  #callback = lambda x: jp.set_param(arg, x)
+  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param(arg, x)
   return callback
 
 lfo_rate = Slider('Rate', jcb('lfo_rate'))
@@ -400,15 +405,50 @@ chorus_mode = RadioButton('Mode', ['Off', 'I', 'II', 'III'],
                           [cho(0), cho(1), cho(2), cho(3)])
 chorus = UIGroup('CH', [chorus_mode])
 
-
 juno_ui = UIGroup('', [lfo, dco, hpf, vcf, vca, env, chorus])
 
 
-patch_holder = PatchHolder()
-patch_selector = ControlledLabel("PatchSel", ['+', '-'],
-                                 [patch_holder.patch_up, patch_holder.patch_down],
-                                 'initial text')
-patch_holder.patch_selector = patch_selector
+def setup_from_patch(patch):
+  """Make the UI match the values in a JunoPatch."""
+  glob_fns = globals()
+  for el in ['lfo_rate', 'lfo_delay_time',
+             'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
+             'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd',
+             'vca_level', 'env_a', 'env_d', 'env_s', 'env_r']:
+    # globals()[el] is the (UI) object with that name
+    # getattr(patch, el) is that member of the patch object
+    glob_fns[el].set_value(getattr(patch, el))
+
+  dco_range.set_value("4'" if patch.stop_4 else "16'" if patch.stop_16 else "8'")
+  dco_pwm_mode.set_value('Man' if patch.pwm_manual else 'LFO')
+  dco_wave.set_value('Pulse', patch.pulse)
+  dco_wave.set_value('Saw', patch.saw)
+  hpf_freq.set_value(str(patch.hpf))
+  vcf_pol.set_value('Neg' if patch.vcf_neg else 'Pos')
+  vca_mode.set_value('Gate' if patch.vca_gate else 'Env')
+  chorus_mode.set_value(['Off', 'I', 'II', 'III'][patch.chorus])
+
+  return patch.name
+
+
+def setup_from_patch_number(patch_number):
+  return setup_from_patch(juno.JunoPatch.from_patch_number(patch_number))
+
+
+def setup_from_midi_chan(new_midi_channel):
+  """Switch which JunoPatch we display based on MIDI channel."""
+  global midi_channel, juno_patch_from_midi_channel
+  midi_channel = new_midi_channel
+  new_patch = juno_patch_from_midi_channel[midi_channel]
+  new_patch.init_AMY()
+  patch_selector.value = new_patch.patch_number  # Bypass actually reading that patch, just set the state.
+  patch_selector.set_text(new_patch.name)
+  setup_from_patch(new_patch)
+  return "MIDI chan %d" % (midi_channel + 1)
+
+
+patch_selector = Spinbox(set_fn=setup_from_patch_number)
+midi_selector = Spinbox(set_fn=setup_from_midi_chan, max_value=15, width=150)
 
 # Wire up MIDI controls
 
@@ -454,12 +494,12 @@ def control_change(control, value):
     param_name = param_map[control]
     # Special cases.
     if param_name == 'Pulse' or param_name == 'Saw':
-      dco_wave.set_val(param_name, value != 0)
+      dco_wave.set_value(param_name, value != 0)
       return  # Early exit.
     elif param_name == 'chorus_mode':
       value = 'Off' if value == 0 else 'I'
     #jp.set_param(param_name, value)
-    globals()[param_name].set_val(value)
+    globals()[param_name].set_value(value)
 
 
 
@@ -470,14 +510,15 @@ tulip.bg_clear()
 juno_ui.place(10, 30)
 juno_ui.draw()
 
-patch_selector.place(800, 20)
+patch_selector.place(600, 20)
 patch_selector.draw()
-patch_holder.set_val(0)
 
+midi_selector.place(825, 20)
+midi_selector.draw()
 
 # Start the polyvoice
 import polyvoice
 
-polyvoice.init(jp, tulip.midi_in, control_change, patch_holder.set_val)
+polyvoice.init(jp, tulip.midi_in, control_change, patch_selector.set_value)
 tulip.midi_callback(polyvoice.midi_event_cb)
 

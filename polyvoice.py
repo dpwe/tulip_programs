@@ -162,7 +162,7 @@ SYNTH = None
 
 def midi_event_cb(x):
   """Callback that takes MIDI note on/off to create Note objects."""
-  m = midi_in_fn()
+  m = midi_in_fn()  # tulip.midi_in()
   while m is not None and len(m) > 0:
     #print("midi in: 0x%x 0x%x 0x%x" % (m[0], m[1], m[2]))
     if m[0] == 0x90:  # Note on.

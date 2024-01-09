@@ -215,22 +215,28 @@ class JunoPatch:
   oscs_per_voice = 5
   # List of base_oscs for allocated voices.
   base_oscs = []
-
+  # Patch number we're based on, if any.
+  patch_number = None
+  # Name, if any
+  name = None
+  
   @staticmethod
   def from_patch_number(patch_number):
     name, sysexbytes = get_juno_patch(patch_number)
-    return JunoPatch.from_sysex(sysexbytes, name)
+    return JunoPatch.from_sysex(sysexbytes, name, patch_number)
 
   @classmethod
-  def from_sysex(cls, sysexbytes, name=None):
+  def from_sysex(cls, sysexbytes, name=None, patch_number=None):
     """Decode sysex bytestream into JunoPatch fields."""
     assert len(sysexbytes) == 18
     result = JunoPatch()
     result.name = name
+    result.patch_number = patch_number
     result._init_from_sysex(sysexbytes)
     return result
 
   def _init_from_patch_number(self, patch_number):
+    self.patch_number = patch_number
     self.name, sysexbytes = get_juno_patch(patch_number)
     self._init_from_sysex(sysexbytes)
   
@@ -248,6 +254,9 @@ class JunoPatch:
     # Bits 3 & 4 also have flipped endianness & sense.
     setattr(self, 'hpf', [3, 2, 1, 0][int(sysexbytes[17]) >> 3])
   
+  def __init__(self, base_osc=0):
+    self.next_osc = base_osc
+
   def _breakpoint_string(self):
     """Format a breakpoint string from the ADSR parameters reaching a peak."""
     return "%d,%s,%d,%s,%d,0" % (
