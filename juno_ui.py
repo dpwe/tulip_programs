@@ -115,39 +115,41 @@ class Slider(UIBase):
 
 class ControlledLabel(UIBase):
   """A label with some press-to-act buttons (e.g. + and -)."""
-  button_size = 16
+  button_size = 28
   button_space = 4
   
-  def __init__(self, name, button_labels, callbacks, text, width=200, height=40):
+  def __init__(self, name, button_labels, callbacks, text, width=240, height=40):
     super().__init__(name)
     self.w = width
     self.h = height
     self.button_labels = button_labels
     self.callbacks = callbacks
     self.text = text
-    
+    self.ids = [IdFactory.next_id() for _ in self.button_labels]
+
   def draw(self):
     x = self.x
-    y = self.y
+    y = self.y + (self.h - self.button_size) // 2
     w = self.button_size
     h = self.button_size
-    dh = self.button_space
-    self.ids = []
-    for tag in self.button_labels:
-      id_ = IdFactory.next_id()
+    dw = self.button_space
+    for id_, tag in zip(self.ids, self.button_labels):
       tulip.ui_button(id_, tag, x, y, w, h, self.text_color, self.bg_color, False, self.body_font) 
       
       tulip.ui_active(id_, 1)
       self.ids.append(id_)
       register_callback(id_, self.callback)
-      y = y + h + dh
+      x = x + w + dw
     self.redraw_text()
 
   def redraw_text(self):
     # Label box
     y = self.y
-    x = self.x + self.button_size + self.button_space
-    w = self.w - self.button_size - self.button_space
+    buttons_w = (
+      len(self.button_labels) * (self.button_size + self.button_space)
+    )
+    x = self.x + buttons_w
+    w = self.w - buttons_w
     h = self.h
     tulip.bg_rect(x, y, w, h, self.bg_color, True)
     tulip.bg_str(self.text, x, y, self.text_color, self.body_font, w, h)
@@ -188,11 +190,13 @@ class ButtonSet(UIBase):
     # Set up state
     self.tags = tags
     self.checkbox_style = checkbox_style
-    self.ids = []
+    # Must allocate IDs during init so that self.set_value will work
+    # before draw().
+    self.ids = [IdFactory.next_id() for _ in self.tags]
     self.state = {}
     for tag in self.tags:
       self.state[tag] = False
-
+      
   def draw(self):
     x = self.x + self.padx
     y = self.y + self.y_txt
@@ -200,12 +204,11 @@ class ButtonSet(UIBase):
                  self.text_color, self.body_font,
                  2 * self.padx, self.text_height)
     y = self.y + self.y_top
-    for tag in self.tags:
+    for id_, tag in zip(self.ids, self.tags):
       tulip.bg_str(tag, x - self.padx, y - self.text_height // 2,
                    self.text_color, self.body_font,
                    2 * self.padx, self.text_height)
       y = y + self.text_height
-      id_ = IdFactory.next_id()
       tulip.ui_checkbox(id_, self.state[tag],
                         x - self.button_w // 2, y, self.button_w,
                         self.fg_color, self.bg_color, self.checkbox_style)
@@ -226,11 +229,11 @@ class RadioButton(ButtonSet):
   def set_value(self, tag):
     for id_, button_tag in zip(self.ids, self.tags):
       if button_tag == tag:
-        tulip.ui_checkbox(id_, True)
         self.state[button_tag] = True
       else:
-        tulip.ui_checkbox(id_, False)
         self.state[button_tag] = False
+      if self.drawn:
+        tulip.ui_checkbox(id_, self.state[button_tag])
       if self.value_callback_fns[button_tag] is not None:
         self.value_callback_fns[button_tag](self.state[button_tag])
 
@@ -253,8 +256,9 @@ class OptionButtons(ButtonSet):
   def set_value(self, tag, value):
     for id_, button_tag in zip(self.ids, self.tags):
       if button_tag == tag:
-        tulip.ui_checkbox(id_, value)
         self.state[button_tag] = value
+        if self.drawn:
+          tulip.ui_checkbox(id_, value)
       if self.value_callback_fns[button_tag] is not None:
         self.value_callback_fns[button_tag](self.state[button_tag])
 
@@ -311,8 +315,8 @@ class Spinbox(ControlledLabel):
     self.set_fn = set_fn  # called when value changes, returns text to display.
     self.min_value = min_value
     self.max_value = max_value
-    super().__init__('Spinbox', ['+', '-'],
-                     [self.value_up, self.value_down],
+    super().__init__('Spinbox', ['-', '+'],
+                     [self.value_down, self.value_up],
                      initial_text, **kwargs)
     self.set_value(initial_value)
 
@@ -337,7 +341,10 @@ import juno
 midi_channel = 0
 juno_patch_from_midi_channel = [juno.JunoPatch.from_patch_number(i) for i in range(16)]
 
-juno_patch_from_midi_channel[midi_channel].init_AMY()
+def current_juno():
+  return juno_patch_from_midi_channel[midi_channel]
+
+current_juno().init_AMY()
 
 
 #jp = juno.JunoPatch.from_patch_number(20)
@@ -346,9 +353,8 @@ juno_patch_from_midi_channel[midi_channel].init_AMY()
 
 # Make the callback function.
 def jcb(arg):
-  global juno_patch_from_midi_channel, midi_channel
   #callback = lambda x: jp.set_param(arg, x)
-  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param(arg, x)
+  callback = lambda x: current_juno().set_param(arg, x)
   return callback
 
 lfo_rate = Slider('Rate', jcb('lfo_rate'))
@@ -369,8 +375,7 @@ dco = UIGroup('DCO', [dco_range, dco_lfo, dco_pwm, dco_pwm_mode, dco_wave, dco_s
 
 #hpf_freq = Slider('Freq', jcb('hpf'))
 def hpf(n):
-  global juno_patch_from_midi_channel, midi_channel  
-  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param('hpf', n) if x else None
+  callback = lambda x: current_juno().set_param('hpf', n) if x else None
   return callback
   
 hpf_freq = RadioButton('Freq', ['3', '2', '1', '0'],
@@ -399,8 +404,7 @@ env_r = Slider('R', jcb('env_r'))
 env = UIGroup('ENV', [env_a, env_d, env_s, env_r])
 
 def cho(n):
-  global juno_patch_from_midi_channel, midi_channel
-  callback = lambda x: juno_patch_from_midi_channel[midi_channel].set_param('chorus', n) if x else None
+  callback = lambda x: current_juno().set_param('chorus', n) if x else None
   return callback
 
 chorus_mode = RadioButton('Mode', ['Off', 'I', 'II', 'III'],
@@ -412,6 +416,7 @@ juno_ui = UIGroup('', [lfo, dco, hpf, vcf, vca, env, chorus])
 
 def setup_from_patch(patch):
   """Make the UI match the values in a JunoPatch."""
+  current_juno().defer_param_updates = True
   glob_fns = globals()
   for el in ['lfo_rate', 'lfo_delay_time',
              'dco_lfo', 'dco_pwm', 'dco_sub', 'dco_noise',
@@ -430,20 +435,21 @@ def setup_from_patch(patch):
   vca_mode.set_value('Gate' if patch.vca_gate else 'Env')
   chorus_mode.set_value(['Off', 'I', 'II', 'III'][patch.chorus])
 
+  current_juno().send_deferred_params()
+
   return patch.name
 
 
 def setup_from_patch_number(patch_number):
-  global midi_channel, juno_patch_from_midi_channel
-  juno_patch_from_midi_channel[midi_channel].patch_number = patch_number
-  juno_patch_from_midi_channel[midi_channel].name = setup_from_patch(juno.JunoPatch.from_patch_number(patch_number))
-  return juno_patch_from_midi_channel[midi_channel].name
+  current_juno().patch_number = patch_number
+  current_juno().name = setup_from_patch(juno.JunoPatch.from_patch_number(patch_number))
+  return current_juno().name
 
 def setup_from_midi_chan(new_midi_channel):
   """Switch which JunoPatch we display based on MIDI channel."""
-  global midi_channel, juno_patch_from_midi_channel
+  global midi_channel
   midi_channel = new_midi_channel
-  new_patch = juno_patch_from_midi_channel[midi_channel]
+  new_patch = current_juno()
   new_patch.init_AMY()
   patch_selector.value = new_patch.patch_number  # Bypass actually reading that patch, just set the state.
   patch_selector.set_text(new_patch.name)
@@ -452,7 +458,7 @@ def setup_from_midi_chan(new_midi_channel):
 
 
 patch_selector = Spinbox(set_fn=setup_from_patch_number)
-midi_selector = Spinbox(set_fn=setup_from_midi_chan, max_value=15, width=150)
+midi_selector = Spinbox(set_fn=setup_from_midi_chan, max_value=15, width=160)
 
 # Wire up MIDI controls
 
@@ -478,7 +484,7 @@ param_map = {
     KNOB_IDS[4]: 'vcf_env',
     KNOB_IDS[5]: 'vcf_lfo',
     KNOB_IDS[6]: 'vcf_kbd',
-    KNOB_IDS[7]: 'vca_level',
+    SLIDER_IDS[8]: 'vca_level',
     SLIDER_IDS[4]: 'env_a',
     SLIDER_IDS[5]: 'env_d',
     SLIDER_IDS[6]: 'env_s',
@@ -490,9 +496,6 @@ param_map = {
 
 def control_change(control, value):
   #print("juno_ui control_change: control", control, "value", value)
-  if control in SLIDER_IDS:
-    # Sliders are max at bottom, weirdly
-    value = 127 - value
   value = value / 127.0
   if control in param_map:
     param_name = param_map[control]
@@ -514,15 +517,16 @@ tulip.bg_clear()
 juno_ui.place(10, 30)
 juno_ui.draw()
 
-patch_selector.place(600, 20)
+patch_selector.place(550, 20)
 patch_selector.draw()
+patch_selector.set_value(0)
 
-midi_selector.place(825, 20)
+midi_selector.place(815, 20)
 midi_selector.draw()
 
 # Start the polyvoice
 import polyvoice
 
-polyvoice.init(juno_patch_from_midi_channel[midi_channel], tulip.midi_in, control_change, patch_selector.set_value)
+polyvoice.init(current_juno(), tulip.midi_in, control_change, patch_selector.set_value)
 tulip.midi_callback(polyvoice.midi_event_cb)
 

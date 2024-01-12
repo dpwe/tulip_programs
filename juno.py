@@ -219,6 +219,12 @@ class JunoPatch:
   patch_number = None
   # Name, if any
   name = None
+  # Params that have been changed since last send_to_AMY.
+  dirty_params = set()
+  # Per-osc settings that need to be updated on clones.
+  last_fixups = dict()
+  # Flag to defer param updates.
+  defer_param_updates = False
   
   @staticmethod
   def from_patch_number(patch_number):
@@ -253,7 +259,7 @@ class JunoPatch:
       setattr(self, field, (int(sysexbytes[17]) & (1 << index)) > 0)
     # Bits 3 & 4 also have flipped endianness & sense.
     setattr(self, 'hpf', [3, 2, 1, 0][int(sysexbytes[17]) >> 3])
-  
+
   def __init__(self, base_osc=0):
     self.next_osc = base_osc
 
@@ -299,6 +305,7 @@ class JunoPatch:
     self.update_vcf()
     self.update_env()
     self.update_cho()
+    self.update_clones()
     
   def update_lfo(self):
     lfo_args = {'freq': to_lfo_freq(self.lfo_rate),
@@ -394,30 +401,54 @@ class JunoPatch:
   # Setters for each Juno UI control
   def set_param(self, param, val):
     setattr(self, param,  val)
+    if self.defer_param_updates:
+      self.dirty_params.add(param)
+    else:
+      for group, params in self.post_set_fn.items():
+        if param in params:
+          getattr(self, 'update_' + group)()
+      self.update_clones()
+
+  def send_deferred_params(self):
     for group, params in self.post_set_fn.items():
-      if param in params:
+      if self.dirty_params.intersection(params):
         getattr(self, 'update_' + group)()
+    self.update_clones()
+    self.dirty_params = set()
+    self.defer_param_updates = False
 
   def amy_send(self, osc, **kwargs):
+    #print("amy_send:", osc, kwargs)
     if self.base_oscs:
       offset_args = dict(kwargs)
       # Apply configuration in full to first osc.
       base_osc = self.base_oscs[0]
       proto_osc = base_osc + osc
+      fixup_args = {}
       for osc_arg in ['mod_source', 'chained_osc']:
         if osc_arg in kwargs:
-          offset_args[osc_arg] = kwargs[osc_arg] + base_osc
+          fixup_args[osc_arg] = kwargs[osc_arg]
+          offset_args[osc_arg] += base_osc
       amy.send(osc=proto_osc, **offset_args)
-      # Simply clone the corresponding oscs from other voices.
-      for base_osc in self.base_oscs[1:]:
-        target_osc = base_osc + osc
-        amy.send(osc=target_osc, clone_osc=proto_osc)
-        fixup_args = {}
-        for osc_arg in ['mod_source', 'chained_osc']:
-          if osc_arg in kwargs:
-            fixup_args[osc_arg] = kwargs[osc_arg] + base_osc
-        if fixup_args:
-          amy.send(osc=target_osc, **fixup_args)
+      if osc not in self.last_fixups:
+        self.last_fixups[osc] = fixup_args
+      else:
+        self.last_fixups[osc].update(fixup_args)
+
+  def update_clones(self):
+    # Assume base_oscs[0] is configured, setup the remainder.
+    if self.base_oscs:
+      base_osc = self.base_oscs[0]
+      for other_base_osc in self.base_oscs[1:]:
+        for osc, fixup_args in self.last_fixups.items():
+          proto_osc = base_osc + osc
+          target_osc = other_base_osc + osc
+          amy.send(osc=target_osc, clone_osc=proto_osc)
+          if fixup_args:
+            offset_args = {key: other_base_osc + value
+                           for key, value in fixup_args.items()}
+            amy.send(osc=target_osc, **offset_args)
+      self.last_fixups = {}
 
   def get_new_voices(self, num_voices):
     """Setup a bunch of secondary voices."""
