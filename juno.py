@@ -221,10 +221,12 @@ class JunoPatch:
   name = None
   # Params that have been changed since last send_to_AMY.
   dirty_params = set()
-  # Per-osc settings that need to be updated on clones.
-  last_fixups = dict()
   # Flag to defer param updates.
   defer_param_updates = False
+  # Cache for sub-osc freq_coefs.
+  sub_freq = '440'
+  # List of the 5 basic oscs that need cloning.
+  oscs_to_clone = set()
   
   @staticmethod
   def from_patch_number(patch_number):
@@ -287,29 +289,85 @@ class JunoPatch:
     self.sub_osc = 2
     self.nse_osc = 3
     self.lfo_osc = 4
-    self.voice_oscs = [self.pwm_osc, self.saw_osc, self.sub_osc, self.nse_osc]
-    
+    self.voice_oscs = [
+      self.pwm_osc, self.saw_osc, self.sub_osc, self.nse_osc
+    ]
     # One-time args to oscs.
     self.amy_send(osc=self.lfo_osc, wave=amy.TRIANGLE, amp='1,0,0,1,0,0')
-    osc_setup = {'filter_type': amy.FILTER_LPF24, 'mod_source': self.lfo_osc}
-    for osc in self.voice_oscs:
-      self.amy_send(osc=osc, **osc_setup)
+    osc_setup = {
+      'filter_type': amy.FILTER_LPF24, 'mod_source': self.lfo_osc}
+    self.amy_send(osc=self.pwm_osc, **osc_setup)
     # Setup chained_oscs
-    self.amy_send(osc=self.pwm_osc, wave=amy.PULSE, chained_osc=self.sub_osc)
-    self.amy_send(osc=self.sub_osc, wave=amy.PULSE, chained_osc=self.saw_osc)
-    self.amy_send(osc=self.saw_osc, wave=amy.SAW_UP, chained_osc=self.nse_osc)
-    self.amy_send(osc=self.nse_osc, wave=amy.NOISE)
+    # All the oscs are the same, except:
+    #  - only pulse needs duty (but OK if it's cloned, except sub)
+    #  - wave is diff for each
+    #  - chained osc is diff for each (but not cloned)
+    #  - sub has different frequency, no duty
+    # So, to update for instance envelope:
+    #  - we could run through each osc and update all params
+    #  - or just update osc 0, then clone to 1,2,3, then restore
+    #    their unique params
+    self.amy_send(osc=self.pwm_osc, chained_osc=self.sub_osc)
+    self.amy_send(osc=self.sub_osc, chained_osc=self.saw_osc)
+    self.amy_send(osc=self.saw_osc, chained_osc=self.nse_osc)
     # Setup all the variable params.
     self.update_lfo()
     self.update_dco()
     self.update_vcf()
     self.update_env()
     self.update_cho()
-    self.update_clones()
+    self.init_clones()
+
+  def init_clones(self):
+    """Having set up the base set of oscs, copy to the other voices."""
+    # Assume base_oscs[0] is configured, setup the remainder.
+    if self.base_oscs:
+      base_osc = self.base_oscs[0]
+      self.clone_voice_oscs()
+      for other_base_osc in self.base_oscs[1:]:
+        for osc in self.voice_oscs + [self.lfo_osc]:
+          proto_osc = base_osc + osc
+          target_osc = other_base_osc + osc
+          amy.send(osc=target_osc, clone_osc=proto_osc)
+          # Set the mod_source, it's not cloned.
+          if osc != self.lfo_osc:
+            amy.send(osc=target_osc,
+                     mod_source=other_base_osc + self.lfo_osc)
+        for i in range(len(self.voice_oscs) - 1):
+          # The first 3 voice oscs chain to the next one
+          amy.send(osc=other_base_osc + self.voice_oscs[i],
+                   chained_osc=other_base_osc + self.voice_oscs[i + 1])
     
+  def _amp_coef_string(self, level):
+    return '0,0,%s,1,0,0' % ffmt(
+      max(.001, to_level(level) * to_level(self.vca_level)))
+
+  def _freq_coef_string(self, base_freq):
+    return '%s,1,0,0,0,%s' % (
+      ffmt(base_freq), ffmt(0.03 * to_level(self.dco_lfo)))
+
+  def clone_voice_oscs(self):
+    """Having changed params on voice zero, clone to others, then fixup."""
+    if not self.base_oscs:
+      return
+    base_osc = self.base_oscs[0]
+    clone_osc = base_osc + self.pwm_osc
+    amy.send(osc=base_osc + self.saw_osc, clone_osc=clone_osc)
+    amy.send(osc=base_osc + self.saw_osc, wave=amy.SAW_UP,
+             amp=self._amp_coef_string(float(self.saw)))
+    amy.send(osc=base_osc + self.nse_osc, clone_osc=clone_osc)
+    amy.send(osc=base_osc + self.nse_osc, wave=amy.NOISE,
+             amp=self._amp_coef_string(self.dco_noise))
+    amy.send(osc=base_osc + self.sub_osc, clone_osc=clone_osc)
+    amy.send(osc=base_osc + self.sub_osc, wave=amy.PULSE,
+             amp=self._amp_coef_string(self.dco_sub),
+             freq=self.sub_freq)
+
   def update_lfo(self):
     lfo_args = {'freq': to_lfo_freq(self.lfo_rate),
-                'bp0': '%i,1.0,%i,1.0,10000,0' % (to_lfo_delay(self.lfo_delay_time), to_lfo_delay(self.lfo_delay_time))}
+                'bp0': '%i,1.0,%i,1.0,10000,0' % (
+                  to_lfo_delay(self.lfo_delay_time),
+                  to_lfo_delay(self.lfo_delay_time))}
     self.amy_send(osc=self.lfo_osc, **lfo_args)
 
   def update_dco(self):
@@ -320,43 +378,29 @@ class JunoPatch:
     elif self.stop_4:
       base_freq *= 2
 
-    def _amp_coef_string(level):
-      return '0,0,%s,1,0,0' % ffmt(max(.001, to_level(level) * to_level(self.vca_level)))
-
-    def _freq_coef_string(base_freq):
-      return '%s,1,0,0,0,%s' % (ffmt(base_freq), ffmt(0.03 * to_level(self.dco_lfo)))
-    
     # PWM square wave.
     const_duty = 0
     lfo_duty = to_level(self.dco_pwm)
     if self.pwm_manual:
       # Swap duty parameters.
       const_duty, lfo_duty = lfo_duty, const_duty
-    self.amy_send(osc=self.pwm_osc,
-             amp=_amp_coef_string(float(self.pulse)),
-             freq=_freq_coef_string(base_freq),
-             duty='%s,0,0,0,0,%s' % (ffmt(0.5 + 0.5 * const_duty), ffmt(0.5 * lfo_duty)))
-    # saw
-    self.amy_send(osc=self.saw_osc,
-             amp=_amp_coef_string(float(self.saw)),
-             freq=_freq_coef_string(base_freq))
-    # sub wave.
-    self.amy_send(osc=self.sub_osc,
-             amp=_amp_coef_string(self.dco_sub),
-             freq=_freq_coef_string(base_freq / 2.0))
-    # noise.
-    self.amy_send(osc=self.nse_osc,
-             amp=_amp_coef_string(self.dco_noise))
+    self.amy_send(
+      osc=self.pwm_osc,
+      amp=self._amp_coef_string(float(self.pulse)),
+      freq=self._freq_coef_string(base_freq),
+      duty='%s,0,0,0,0,%s' % (
+        ffmt(0.5 + 0.5 * const_duty), ffmt(0.5 * lfo_duty)))
+    # Setup the unique freq_coef for the sub_osc.
+    self.sub_freq = self._freq_coef_string(base_freq / 2.0)
 
   def update_vcf(self):
     vcf_env_polarity = -1.0 if self.vcf_neg else 1.0
-    for osc in self.voice_oscs:
-      self.amy_send(osc=osc, resonance=to_resonance(self.vcf_res),
-               filter_freq='%s,%s,0,0,%s,%s' % (
-                 ffmt(to_filter_freq(self.vcf_freq)),
-                 ffmt(to_level(self.vcf_kbd)),
-                 ffmt(20 * vcf_env_polarity * to_level(self.vcf_env)),
-                 ffmt(5 * to_level(self.vcf_lfo))))
+    self.amy_send(osc=self.pwm_osc, resonance=to_resonance(self.vcf_res),
+                  filter_freq='%s,%s,0,0,%s,%s' % (
+                    ffmt(to_filter_freq(self.vcf_freq)),
+                    ffmt(to_level(self.vcf_kbd)),
+                    ffmt(20 * vcf_env_polarity * to_level(self.vcf_env)),
+                    ffmt(5 * to_level(self.vcf_lfo))))
 
   def update_env(self):
     bp1_coefs = self._breakpoint_string()
@@ -364,8 +408,7 @@ class JunoPatch:
       bp0_coefs=''
     else:
       bp0_coefs = self._breakpoint_string()
-    for osc in self.voice_oscs:
-      self.amy_send(osc=osc, bp0=bp0_coefs, bp1=bp1_coefs)
+    self.amy_send(osc=self.pwm_osc, bp0=bp0_coefs, bp1=bp1_coefs)
 
   def update_cho(self):
     # Chorus & HPF
@@ -407,48 +450,44 @@ class JunoPatch:
       for group, params in self.post_set_fn.items():
         if param in params:
           getattr(self, 'update_' + group)()
+      self.clone_voice_oscs()
       self.update_clones()
 
   def send_deferred_params(self):
     for group, params in self.post_set_fn.items():
       if self.dirty_params.intersection(params):
         getattr(self, 'update_' + group)()
+    self.clone_voice_oscs()
     self.update_clones()
     self.dirty_params = set()
     self.defer_param_updates = False
 
   def amy_send(self, osc, **kwargs):
-    #print("amy_send:", osc, kwargs)
     if self.base_oscs:
-      offset_args = dict(kwargs)
-      # Apply configuration in full to first osc.
       base_osc = self.base_oscs[0]
-      proto_osc = base_osc + osc
-      fixup_args = {}
-      for osc_arg in ['mod_source', 'chained_osc']:
-        if osc_arg in kwargs:
-          fixup_args[osc_arg] = kwargs[osc_arg]
-          offset_args[osc_arg] += base_osc
-      amy.send(osc=proto_osc, **offset_args)
-      if osc not in self.last_fixups:
-        self.last_fixups[osc] = fixup_args
-      else:
-        self.last_fixups[osc].update(fixup_args)
+      # Adjust relative args.
+      offset_args = dict(kwargs)
+      for relative_arg in ['mod_source', 'chained_osc']:
+        if relative_arg in offset_args:
+          offset_args[relative_arg] += base_osc
+      # Apply configuration in full to first voice.
+      amy.send(osc=base_osc + osc, **kwargs)
+      self.oscs_to_clone.add(osc)
 
   def update_clones(self):
     # Assume base_oscs[0] is configured, setup the remainder.
     if self.base_oscs:
       base_osc = self.base_oscs[0]
       for other_base_osc in self.base_oscs[1:]:
-        for osc, fixup_args in self.last_fixups.items():
+        if self.pwm_osc in self.oscs_to_clone:
+          self.oscs_to_clone.add(self.saw_osc)
+          self.oscs_to_clone.add(self.sub_osc)
+          self.oscs_to_clone.add(self.nse_osc)
+        for osc in self.oscs_to_clone:
           proto_osc = base_osc + osc
           target_osc = other_base_osc + osc
           amy.send(osc=target_osc, clone_osc=proto_osc)
-          if fixup_args:
-            offset_args = {key: other_base_osc + value
-                           for key, value in fixup_args.items()}
-            amy.send(osc=target_osc, **offset_args)
-      self.last_fixups = {}
+      self.oscs_to_clone = set()
 
   def get_new_voices(self, num_voices):
     """Setup a bunch of secondary voices."""
