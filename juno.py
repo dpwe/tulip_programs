@@ -78,7 +78,8 @@ def to_decay_time(val):
   # time is time to decay to 1/2; Amy envelope times are to decay to exp(-3) = 0.05
   # return np.log(0.05) / np.log(0.5) * time
   # from Arturia video
-  return 80 * exp2(0.066 * val * 127) - 80
+  #return 80 * exp2(0.066 * val * 127) - 80
+  return 80 * exp2(0.09 * val * 127) - 80
   
 
 def to_release_time(val):
@@ -122,9 +123,10 @@ def to_resonance(val):
 
 def to_filter_freq(val):
   # filter_freq goes from ? 100 to 6400 Hz with 18 steps/octave
-  #return float("%.3f" % (100 * np.exp(np.log(2) * midi / 20.0)))
+  #return float("%.3f" % (100 * np.exp2(midi / 20.0)))
   # from Arturia video
-  return float("%.3f" % (6.5 * exp2(0.11 * val * 127)))
+  #return float("%.3f" % (6.5 * exp2(0.11 * val * 127)))
+  return float("%.3f" % (25 * exp2(0.055 * val * 127)))
 
 
 def ffmt(val):
@@ -296,7 +298,7 @@ class JunoPatch:
     self.amy_send(osc=self.lfo_osc, wave=amy.TRIANGLE, amp='1,0,0,1,0,0')
     osc_setup = {
       'filter_type': amy.FILTER_LPF24, 'mod_source': self.lfo_osc}
-    self.amy_send(osc=self.pwm_osc, **osc_setup)
+    self.amy_send(osc=self.pwm_osc, wave=amy.PULSE, **osc_setup)
     # Setup chained_oscs
     # All the oscs are the same, except:
     #  - only pulse needs duty (but OK if it's cloned, except sub)
