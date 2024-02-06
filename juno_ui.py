@@ -470,7 +470,8 @@ SLIDER_IDS = [74, 71, 91, 93, 73, 72, 5, 84, 7]
 KNOB_IDS = [75, 76, 92, 95, 10, 77, 78, 79]
 # Oxygen49 buttons.  They toggle between 0 and 0x7f.
 #BUTTON_IDS = [0x4a, 0x19, 0x77, 0x4f, 0x55, 0x66, 0x6b, 0x70]
-BUTTON_IDS = [50, 51, 52, 53, 54, 55]
+# I had to program these.  See Oxygen49-UserGuide-v1.3.pdf + notes.
+BUTTON_IDS = [96, 97, 98, 99, 100, 101, 102, 103, 104,   113, 114, 115, 116, 117, 118]
 
 param_map = {
     KNOB_IDS[0]: 'lfo_rate',
