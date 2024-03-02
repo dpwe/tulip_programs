@@ -39,7 +39,7 @@ class ArpeggiatorSynth:
     if self.direction == "down":
       notes = notes[::-1]
     elif self.direction == "updown":
-      notes = notes + notes[-2:1:-1]
+      notes = notes + notes[-2:0:-1]
     return notes
 
   def next_note(self):
