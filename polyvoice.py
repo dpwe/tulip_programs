@@ -177,6 +177,8 @@ def midi_event_cb(x):
       set_patch_fn(m[1])
     elif m[0] == 0xe0:  # Pitch bend.
       control_change_fn(0, m[2])
+      # Special case.  Pitch bend is -1.0 .. 1.0.
+      #amy.send(pitch_bend=(m[2] / 64 + m[1] / 8192) - 1.0)
     elif m[0] == 0xb0:  # Other control slider.
       control_change_fn(m[1], m[2])
         
@@ -195,7 +197,7 @@ def init(synth=None, my_midi_in_fn=None, my_control_change_fn=None, my_set_patch
   midi_in_fn = my_midi_in_fn
   control_change_fn = my_control_change_fn
   set_patch_fn = my_set_patch_fn
-    
+
   #if not synth:
   #    import juno
   #    synth = juno.JunoPatch.from_patch_number(0)
