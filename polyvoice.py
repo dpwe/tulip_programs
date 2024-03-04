@@ -181,6 +181,10 @@ def midi_event_cb(x):
       #amy.send(pitch_bend=(m[2] / 64 + m[1] / 8192) - 1.0)
     elif m[0] == 0xb0:  # Other control slider.
       control_change_fn(m[1], m[2])
+    elif m[0] == 0xbf:
+      # Special case for Oxygen49 transport buttons which send val 0x00 on release.
+      if m[2] == 0x7f:
+          control_change_fn(m[1], m[2])
         
     # Are there more events waiting?
     m = m[3:]

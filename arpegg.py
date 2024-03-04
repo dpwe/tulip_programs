@@ -6,7 +6,8 @@ import random
 class ArpeggiatorSynth:
   """Create arpeggios."""
   note_on_fn = None
-  active_notes = None
+  current_active_notes = None
+  arpeggiate_base_notes = None
   octaves = 2
   direction = "up"
   current_note = None
@@ -14,23 +15,41 @@ class ArpeggiatorSynth:
   velocity = 1.0
   period_ms = 125
   synth = None
+  active = False
+  hold = False
+  split_note = 60 # 128  # Split is off the end of the keyboard, i.e., inactive.
   
   def __init__(self, synth):
     self.synth = synth
-    self.active_notes = []
+    self.arpeggiate_base_notes = set()
+    self.current_active_notes = set()
 
   def note_on(self, note, vel):
-    self.active_notes.append(note)
-    self.active_notes = sorted(self.active_notes)
+    if not self.active or note >= self.split_note:
+      return self.synth.note_on(note, vel)
+    if self.hold and not self.current_active_notes:
+      # First note after all keys off resets hold set.
+      self.arpeggiate_base_notes = set()
+    # Adding keys to some already down.
+    self.current_active_notes.add(note)
+    # Because it's a set, can't get more than one instance of a base note.
+    self.arpeggiate_base_notes.add(note)
 
   def note_off(self, note):
-    note_index = self.active_notes.index(note)
-    del self.active_notes[note_index]
-
+    if not self.active or note >= self.split_note:
+      return self.synth.note_off(note)
+    #print(self.current_active_notes, self.arpeggiate_base_notes)
+    # Update our internal record of keys currently held down.
+    self.current_active_notes.remove(note)
+    if not self.hold:
+      # If not hold, remove notes from active set when released.
+      self.arpeggiate_base_notes.remove(note)
+      
+    
   def full_sequence(self):
-    """The full note loop given active_notes, octaves, and direction."""
+    """The full note loop given base_notes, octaves, and direction."""
     # Basic notes, ascending.
-    basic_notes = sorted(self.active_notes)
+    basic_notes = sorted(self.arpeggiate_base_notes)
     # Apply octaves
     notes = []
     for o in range(self.octaves):
@@ -60,8 +79,10 @@ class ArpeggiatorSynth:
       time.sleep_ms(self.period_ms)
 
   def control_change(self, control, value):
+    #if not self.active:
+    #  return self.synth.control_change(control, value)
     if control == self.rate_control_num:
-      self.period_ms = 25 + 5 * value  # 25 to 665 ms
+      self.period_ms = 25 + 5 * value  #  25 to 665 ms
     elif control == self.octaves_control_num:
       self.cycle_octaves()
     elif control == self.direction_control_num:
@@ -82,32 +103,39 @@ class ArpeggiatorSynth:
     else:
       self.direction = 'up'
 
+  def set(self, arg, val=None):
+    """Callback for external control."""
+    #print("arp set", arg, val)
+    #if self.active:
+    #  return self.synth.set(arg, val)
+    if arg == 'on':
+      self.active = val
+    elif arg == 'hold':
+      self.hold = val
+      # Copy across the current_active_notes.
+      self.arpeggiate_base_notes = set(self.current_active_notes)
+    elif arg == 'arp_rate':
+      self.period_ms = int(1000 / (2.0 ** (5 * val)))  # 1 Hz to 32 Hz
+    elif arg == 'octaves':
+      self.octaves = val
+    else:
+      self.direction = arg
 
-class TestSynth:
-
-  def note_on(self, note, vel):
-    print("Note on:", note, vel)
-
-  def note_off(self, note):
-    print("Note off:", note)
+  def get_new_voices(self, num_voices):
+    return self.synth.get_new_voices(num_voices)
 
 
+# # Plumb into juno.
+# execfile('juno_ui.py')
     
-# Plumb into juno.
-execfile('juno_ui.py')
-    
 
-juno_synth = polyvoice.SYNTH
-juno_control_change = polyvoice.control_change_fn
+# juno_synth = polyvoice.SYNTH
+# juno_control_change = polyvoice.control_change_fn
 
-arp = ArpeggiatorSynth(juno_synth)
-arp.control_change_fwd_fn = juno_control_change
-arp.rate_control_num = KNOB_IDS[7]
-arp.octaves_control_num = BUTTON_IDS[0]
-arp.direction_control_num = BUTTON_IDS[1]
+# arp = ArpeggiatorSynth(juno_synth)
+# arp.control_change_fwd_fn = juno_control_change
+# arp.rate_control_num = KNOB_IDS[7]
+# arp.octaves_control_num = BUTTON_IDS[0]
+# arp.direction_control_num = BUTTON_IDS[1]
 
 
-polyvoice.SYNTH = arp
-polyvoice.control_change_fn = arp.control_change
-
-arp.run()
