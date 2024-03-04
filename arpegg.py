@@ -76,6 +76,7 @@ class ArpeggiatorSynth:
   def next_note(self):
     if self.current_note:
       self.synth.note_off(self.current_note)
+      self.current_note = None
     if self.full_sequence:
       if self.direction == "rand":
         self.current_step = random.randint(0, len(self.full_sequence) - 1)
