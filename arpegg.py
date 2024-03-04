@@ -89,10 +89,16 @@ class ArpeggiatorSynth:
   def run(self):
     # Endless function that will emit sequencer notes when there are arpeggiate_base_notes.
     while True:
-      # Wait for self.running to start sequence.
-      while self.running:
-        self.next_note()
-        time.sleep_ms(self.period_ms)
+      if not self.running:
+        time.sleep_ms(10)  # Break up the loop a little
+      else:
+        # self.running started sequence.
+        # Another brief pause to let all keys go down
+        time.sleep_ms(10)
+        # Cycle the notes as long as we have them.
+        while self.running:
+          self.next_note()
+          time.sleep_ms(self.period_ms)
 
   def control_change(self, control, value):
     #if not self.active:
