@@ -522,4 +522,5 @@ arpeggiator.synth = polyvoice.SYNTH
 polyvoice.SYNTH = arpeggiator
 #polyvoice.control_change_fn = arpeggiator.control_change
 
+# Arpeggiator run must be launched from main thread, not event thread, since it blocks.
 arpeggiator.run()

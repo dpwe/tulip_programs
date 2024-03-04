@@ -453,6 +453,7 @@ class JunoPatch:
     
   # Setters for each Juno UI control
   def set_param(self, param, val):
+    #print("juno.set_param", param, val)
     setattr(self, param,  val)
     if self.defer_param_updates:
       self.dirty_params.add(param)
