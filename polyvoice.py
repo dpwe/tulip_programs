@@ -89,16 +89,22 @@ class Queue:
 class Synth:
   """Manage a polyphonic synthesizer by rotating among a fixed pool of voices.
 
-  Argument synth_source provides the following methods:
-    synth_source.get_new_voices(num_voices) returns num_voices VoiceObjects.
+  Provides methods:
+    synth.note_on(midi_note, velocity)
+    synth.note_off(midi_note)
+    synth.control_change(control, value)
+    synth.set_patch(patch_num)
+  
+  Argument voice_source provides the following methods:
+    voice_source.get_new_voices(num_voices) returns num_voices VoiceObjects.
       VoiceObjects accept voice.note_on(note, vel), voice.note_off()
-    synth_source.set_patch(patch_num) changes preset for all voices.
-    synth_source.control_change(control, value) modifies a parameter for all voices.
+    voice_source.set_patch(patch_num) changes preset for all voices.
+    voice_source.control_change(control, value) modifies a parameter for all voices.
   """
   
-  def __init__(self, synth_source, num_voices=6):
-    self.synth_source = synth_source
-    self.voices = synth_source.get_new_voices(num_voices)
+  def __init__(self, voice_source, num_voices=6):
+    self.voice_source = voice_source
+    self.voices = voice_source.get_new_voices(num_voices)
     self.released_voices = Queue(num_voices, name='Released')
     for voice_num in range(num_voices):
       self.released_voices.put(voice_num)
@@ -150,10 +156,10 @@ class Synth:
       self.voices[new_voice].note_on(note, velocity)
 
   def set_patch(self, patch_number):
-    self.synth_source.set_patch(patch_number)
+    self.voice_source.set_patch(patch_number)
 
   def control_change(self, control, value):
-    self.synth_source.control_change(control, value)
+    self.voice_source.control_change(control, value)
 
 midi_in_fn = None
 control_change_fn = None

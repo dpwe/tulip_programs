@@ -2,12 +2,7 @@
 # Convert juno-106 sysex patches to Amy
 
 
-try:
-  import amy
-except ImportError:
-  import alles
-  amy = alles
-
+import amy
 import json
 import math
 import time
@@ -27,19 +22,19 @@ except AttributeError:
   # Return int value in ms
   #time = 0.01 * np.exp(np.log(1e3) * midi / 127.0)
   # midi 30 is ~ 200 ms, 50 is ~ 1 sec, so
-  #        D=30 
-  # 
+  #        D=30
+  #
   # from demo at https://www.synthmania.com/Roland%20Juno-106/Audio/Juno-106%20Factory%20Preset%20Group%20A/14%20Flutes.mp3
-  # A11 Brass set        A=3  D=49  S=45 R=32 -> 
+  # A11 Brass set        A=3  D=49  S=45 R=32 ->
   # A14 Flute            A=23 D=81  S=0  R=18 -> A=200ms, R=200ms, D=0.22 to 0.11 in 0.830 s / 0.28 to 0.14 in 0.92     R = 0.2 to 0.1 in 0.046
-  # A16 Brass & Strings  A=44 D=66  S=53 R=44 -> A=355ms, R=        
+  # A16 Brass & Strings  A=44 D=66  S=53 R=44 -> A=355ms, R=
   # A15 Moving Strings   A=13 D=87       R=35 -> A=100ms, R=600ms,
   # A26 Celeste          A=0  D=44  S=0  R=81 -> A=2ms             D=0.48 to 0.24 in 0.340 s                           R = 0.9 to 0.5 in 0.1s; R clearly faster than D
   # A27 Elect Piano      A=1  D=85  S=43 R=40 -> A=14ms,  R=300ms
   # A28 Elect. Piano II  A=0  D=68  S=0  R=22 ->                   D=0.30 to 0.15 in 0.590 s  R same as D?
   # A32 Steel Drums      A=0  D=26  S=0  R=37 ->                   D=0.54 to 0.27 in 0.073 s
   # A34 Brass III        A=58 D=100 S=94 R=37 -> A=440ms, R=1000ms
-  # A35 Fanfare          A=72 D=104 S=75 R=49 -> A=600ms, R=1200ms 
+  # A35 Fanfare          A=72 D=104 S=75 R=49 -> A=600ms, R=1200ms
   # A37 Pizzicato        A=0  D=11  S=0  R=12 -> A=6ms,   R=86ms   D=0.66 to 0.33 in 0.013 s
   # A41 Bass Clarinet    A=11 D=75  S=0  R=25 -> A=92ms,  R=340ms, D=0.20 to 0.10 in 0.820 s /                            R = 0.9 to 0.45 in 0.070
   # A42 English Horn     A=8  D=81  S=21 R=16 -> A=68ms,  R=240ms,
@@ -64,13 +59,14 @@ except AttributeError:
 # based on set of isolated samples
 # https://github.com/pendragon-andyh/Juno60
 
-  
+
 def to_attack_time(val):
   """Convert a midi value (0..127) to a time for ADSR."""
   # From regression of sound examples
   return 6 + 8 * val * 127
   # from Arturia video
   #return 12 * exp2(0.066 * midi) - 12
+
 
 def to_decay_time(val):
   """Convert a midi value (0..127) to a time for ADSR."""
@@ -80,7 +76,7 @@ def to_decay_time(val):
   # from Arturia video
   #return 80 * exp2(0.066 * val * 127) - 80
   return 80 * exp2(0.085 * val * 127) - 80
-  
+
 
 def to_release_time(val):
   """Convert a midi value (0..127) to a time for ADSR."""
@@ -161,12 +157,12 @@ class NoteObj:
   def __init__(self, osc):
     self.osc = osc
 
-  def note_on(self, note, velocity):
+  def note_on(self, note, velocity, time=None):
     self.note = note
-    amy.send(osc=self.osc, note=note, vel=velocity)
+    amy.send(osc=self.osc, note=note, vel=velocity, time=time)
 
-  def note_off(self):
-    amy.send(osc=self.osc, vel=0)
+  def note_off(self, time=None):
+    amy.send(osc=self.osc, vel=0, time=time)
 
 
 class JunoPatch:
@@ -205,7 +201,7 @@ class JunoPatch:
                  'vcf': ['vcf_neg', 'vcf_env', 'vcf_freq', 'vcf_lfo', 'vcf_res', 'vcf_kbd'],
                  'env': ['env_a', 'env_d', 'env_s', 'env_r', 'vca_gate'],
                  'cho': ['chorus', 'hpf']}
-  
+
   # These lists name the fields in the order they appear in the sysex.
   FIELDS = ['lfo_rate', 'lfo_delay_time', 'dco_lfo', 'dco_pwm', 'dco_noise',
            'vcf_freq', 'vcf_res', 'vcf_env', 'vcf_lfo', 'vcf_kbd', 'vca_level',
@@ -232,7 +228,7 @@ class JunoPatch:
   sub_freq = '440'
   # List of the 5 basic oscs that need cloning.
   oscs_to_clone = set()
-  
+
   @staticmethod
   def from_patch_number(patch_number):
     name, sysexbytes = get_juno_patch(patch_number)
@@ -252,7 +248,7 @@ class JunoPatch:
     self.patch_number = patch_number
     self.name, sysexbytes = get_juno_patch(patch_number)
     self._init_from_sysex(sysexbytes)
-  
+
   def _init_from_sysex(self, sysexbytes):
     # The first 16 bytes are sliders.
     for index, field in enumerate(self.FIELDS):
@@ -299,50 +295,33 @@ class JunoPatch:
     ]
     # One-time args to oscs.
     self.amy_send(osc=self.lfo_osc, wave=amy.TRIANGLE, amp='1,0,0,1,0,0')
-    osc_setup = {
-      'filter_type': amy.FILTER_LPF24, 'mod_source': self.lfo_osc}
+    osc_setup = {'mod_source': self.lfo_osc}
     self.amy_send(osc=self.pwm_osc, wave=amy.PULSE, **osc_setup)
-    # Setup chained_oscs
-    # All the oscs are the same, except:
-    #  - only pulse needs duty (but OK if it's cloned, except sub)
-    #  - wave is diff for each
-    #  - chained osc is diff for each (but not cloned)
-    #  - sub has different frequency, no duty
-    # So, to update for instance envelope:
-    #  - we could run through each osc and update all params
-    #  - or just update osc 0, then clone to 1,2,3, then restore
-    #    their unique params
-    self.amy_send(osc=self.pwm_osc, chained_osc=self.sub_osc)
-    self.amy_send(osc=self.sub_osc, chained_osc=self.saw_osc)
-    self.amy_send(osc=self.saw_osc, chained_osc=self.nse_osc)
     # Setup all the variable params.
     self.update_lfo()
     self.update_dco()
     self.update_vcf()
     self.update_env()
     self.update_cho()
-    self.init_clones()
+    self.init_voices()
 
-  def init_clones(self):
+  def init_voices(self):
     """Having set up the base set of oscs, copy to the other voices."""
     # Assume base_oscs[0] is configured, setup the remainder.
     if self.base_oscs:
       base_osc = self.base_oscs[0]
-      self.clone_voice_oscs()
+      self.clone_oscs()
       for other_base_osc in self.base_oscs[1:]:
         for osc in self.voice_oscs + [self.lfo_osc]:
           proto_osc = base_osc + osc
           target_osc = other_base_osc + osc
           amy.send(osc=target_osc, clone_osc=proto_osc)
-          # Set the mod_source, it's not cloned.
-          if osc != self.lfo_osc:
-            amy.send(osc=target_osc,
-                     mod_source=other_base_osc + self.lfo_osc)
+        # chained_osc is cleared by clone_osc, set them up.
         for i in range(len(self.voice_oscs) - 1):
           # The first 3 voice oscs chain to the next one
           amy.send(osc=other_base_osc + self.voice_oscs[i],
                    chained_osc=other_base_osc + self.voice_oscs[i + 1])
-    
+
   def _amp_coef_string(self, level):
     return '0,0,%s,1,0,0' % ffmt(max(.001, to_level(level) * to_level(self.vca_level)))
 
@@ -350,22 +329,29 @@ class JunoPatch:
     return '%s,1,0,0,0,%s,1' % (
       ffmt(base_freq), ffmt(0.03 * to_level(self.dco_lfo)))
 
-  def clone_voice_oscs(self):
-    """Having changed params on voice zero, clone to others, then fixup."""
+  def clone_oscs(self):
+    """Clone modifications on osc 0 to remaining oscs, then fixup."""
     if not self.base_oscs:
       return
     base_osc = self.base_oscs[0]
     clone_osc = base_osc + self.pwm_osc
+    # Make the clones have their filters turned off.
+    amy.send(osc=clone_osc, filter_type=amy.FILTER_NONE)
     amy.send(osc=base_osc + self.saw_osc, clone_osc=clone_osc)
     amy.send(osc=base_osc + self.saw_osc, wave=amy.SAW_UP,
-             amp=self._amp_coef_string(float(self.saw)))
-    amy.send(osc=base_osc + self.nse_osc, clone_osc=clone_osc)
-    amy.send(osc=base_osc + self.nse_osc, wave=amy.NOISE,
-             amp=self._amp_coef_string(self.dco_noise))
+             amp=self._amp_coef_string(float(self.saw)),
+             chained_osc=base_osc + self.sub_osc)
     amy.send(osc=base_osc + self.sub_osc, clone_osc=clone_osc)
     amy.send(osc=base_osc + self.sub_osc, wave=amy.PULSE,
              amp=self._amp_coef_string(self.dco_sub),
-             freq=self.sub_freq)
+             freq=self.sub_freq,
+             chained_osc=base_osc + self.nse_osc)
+    amy.send(osc=base_osc + self.nse_osc, clone_osc=clone_osc)
+    amy.send(osc=base_osc + self.nse_osc, wave=amy.NOISE,
+             amp=self._amp_coef_string(self.dco_noise))  # No chained_osc.
+    # Re-enable the filter on PWM osc.  Also, enable its chaining.
+    amy.send(osc=clone_osc, filter_type=amy.FILTER_LPF24,
+             chained_osc=base_osc + self.saw_osc)
 
   def update_lfo(self):
     lfo_args = {'freq': to_lfo_freq(self.lfo_rate),
@@ -450,10 +436,9 @@ class JunoPatch:
     #self.amy_send(osc=amy.CHORUS_OSC, **chorus_args)
     # *Don't* repeat for all the notes, these ones are global.
     amy.send(**chorus_args)
-    
+
   # Setters for each Juno UI control
   def set_param(self, param, val):
-    #print("juno.set_param", param, val)
     setattr(self, param,  val)
     if self.defer_param_updates:
       self.dirty_params.add(param)
@@ -463,15 +448,15 @@ class JunoPatch:
         if param in params:
           getattr(self, 'update_' + group)()
       if self.recloning_needed:
-        self.clone_voice_oscs()
-        self.update_clones()
+        self.clone_oscs()
+        self.update_voices()
 
   def send_deferred_params(self):
     for group, params in self.post_set_fn.items():
       if self.dirty_params.intersection(params):
         getattr(self, 'update_' + group)()
-    self.clone_voice_oscs()
-    self.update_clones()
+    self.clone_oscs()
+    self.update_voices()
     self.dirty_params = set()
     self.defer_param_updates = False
 
@@ -487,8 +472,8 @@ class JunoPatch:
       amy.send(osc=base_osc + osc, **kwargs)
       self.oscs_to_clone.add(osc)
 
-  def update_clones(self):
-    # Assume base_oscs[0] is configured, setup the remainder.
+  def update_voices(self):
+    # Assume base_oscs[0] is configured, setup the remaining base_osc voices.
     if self.base_oscs:
       base_osc = self.base_oscs[0]
       for other_base_osc in self.base_oscs[1:]:
@@ -500,6 +485,9 @@ class JunoPatch:
           proto_osc = base_osc + osc
           target_osc = other_base_osc + osc
           amy.send(osc=target_osc, clone_osc=proto_osc)
+          # First 3 oscs must be chained to successors.
+          if osc in [self.pwm_osc, self.saw_osc, self.sub_osc]:
+            amy.send(osc=target_osc, chained_osc=target_osc + 1)
       self.oscs_to_clone = set()
 
   def get_new_voices(self, num_voices):
