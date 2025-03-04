@@ -4,14 +4,20 @@
 #  - separate track structures
 #  - per-track record-ready radio button
 #  - playback non-record tracks during record
-# TODO
-#  - "overwrite-on-record" - delete notes that begin within newly-recorded range
-#  - Per-track "record/insert/playback/mute" switch (currently just record)
-#  - playback routing: Send MIDI events rather than Synth.note_* events?  As an option?
+#  - undo/redo
+#  - "overwrite-on-record" - delete notes that begin within newly-recorded range - currently everything after playhead
 #  - Save & Load of sequences
+#  - mute track button
+# TODO
+#  - playback routing: Send MIDI events rather than Synth.note_* events?  As an option?
+#  - metronome
+# ISSUES
+#  - when two tracks play to the same synth, the note-offs can cancel each other's overlapping notes
 
 import synth, tulip, midi, amy
 import ui
+import json  # for load/save
+
 app = None
 (screen_width, screen_height) = tulip.screen_size()
 
@@ -31,15 +37,18 @@ def _ms_to_x(ms):
 # dpwe to make this more real. 
 class SeqNote:
 
-    def __init__(self, note, vel, tick, channel):
+    def __init__(self, note, vel, tick, channel, duration=None):
         global all_active_channels
         self.channel = channel
         all_active_channels.add(channel)
         self.note = note
         self.vel = vel
         self.on_tick = tick
-        self.off_tick = None
-        
+        if duration is None:
+            self.off_tick = None
+        else:
+            self.off_tick = self.on_tick + duration
+
     def set_end(self, off_tick):
         self.off_tick = off_tick
         
@@ -60,17 +69,32 @@ class SeqNote:
                     cx_off = _ms_to_x(app.playhead_ms)
                 tulip.bg_rect(base_x + cx_on, base_y + cy, cx_off - cx_on + 2, 2, color, 1)
 
-    def schedule(self, offset=0):
+    def schedule(self, note_on_fn, note_off_fn=None, offset=0):
         global app
-        midi.config.synth_per_channel[self.channel].note_on(self.note, self.vel, time=self.on_tick - offset)
-        if self.off_tick is not None:
-            midi.config.synth_per_channel[self.channel].note_off(self.note, time=self.off_tick - offset)
+        if note_on_fn:
+           note_on_fn(self.note, self.vel / 127, time=self.on_tick - offset)
+           if self.off_tick is not None:
+               if note_off_fn:
+                   note_off_fn(self.note, time=self.off_tick - offset)
+               else:
+                   note_on_fn(self.note, 0, time=self.off_tick - offset)
+                
+    def as_list(self):
+        """Return list of scalars, for saving as json."""
+        duration = self.off_tick - self.on_tick if self.off_tick is not None else None
+        return self.on_tick, duration, self.channel, self.note, self.vel
+
+    @staticmethod
+    def from_list(params):
+        """Factory for a SeqNote from list of params as returned by as_list()."""
+        on_tick, duration, channel, note, vel = params
+        return SeqNote(note=note, vel=vel, channel=channel, tick=on_tick, duration=duration)
 
 
 class Track:
     """A single track of the sequencer."""
 
-    def __init__(self, index, x, y, w=0, h=0, fg_color=93, bg_color=32):
+    def __init__(self, index, x, y, w=0, h=0, fg_color=93, bg_color=32, note_on_fn=None, note_off_fn=None):
         global screen_width, screen_height
         self.index = index
         self.x = x
@@ -79,35 +103,68 @@ class Track:
         self.h = h if h else screen_height // 5
         self.fg_color = fg_color
         self.bg_color = bg_color
+        self.note_on_fn = note_on_fn
+        self.note_off_fn = note_off_fn
         self.notes = []
+        self.saved_notes = []
         self.live_notes_dict = {}
         # Setup sprite
         tulip.sprite_register(index, 0, 1, self.h)
         tulip.sprite_on(index)
         tulip.sprite_move(index, self.x, self.y)
         # Setup record button
-        self.rec_button = tulip.UIButton(text="R", bg_color=bg_color, fg_color=255, callback=self.rec_pushed)
-        app.add(self.rec_button, x=self.x - 80, y=self.y + 20)
+        self.rec_button = tulip.UIButton(text="R", bg_color=0x49, fg_color=255, callback=self.rec_pushed)
+        app.add(self.rec_button, x=self.x - 80, y=self.y - 0)
         self.rec_live = False
+        # Setup mute button
+        self.mute_button = tulip.UIButton(text="M", bg_color=0x49, fg_color=255, callback=self.mute_pushed)
+        app.add(self.mute_button, x=self.x - 80, y=self.y + 60)
+        self.muted = False
+
+    def rec_pushed(self, val):
+        global app
+        self.set_rec(not self.rec_live)
+        if self.rec_live:
+            # If this record was selected, deselect all other recs.
+            for track in app.tracks:
+                if track != self:
+                    track.set_rec(False)
 
     def set_rec(self, val):
         global app
         self.rec_live = val
-        color = self.bg_color + self.rec_live * 73
+        color = 0xc0 if val else 0x49
         self.rec_button.button.set_style_bg_color(ui.pal_to_lv(color), ui.lv.PART.MAIN)
         if val:
             app.current_track = self
         elif app.current_track == self:
             app.current_track = None
 
-    def rec_pushed(self, val):
-        global app
-        self.set_rec(not self.rec_live)
-        # If this record was selected, deselect all other recs.
-        if self.rec_live:
-            for track in app.tracks:
-                if track != self:
-                    track.set_rec(False)
+    def mute_pushed(self, val):
+        self.set_muted(not self.muted)
+
+    def set_muted(self, val):
+        self.muted = val
+        color = 0xD4 if self.muted else 0x49
+        self.mute_button.button.set_style_bg_color(ui.pal_to_lv(color), ui.lv.PART.MAIN)
+
+    def clear_notes(self, clear_from_ms=0):
+        """Save current notes, clear notes, redraw."""
+        if self.notes:
+            self.saved_notes = self.notes
+            add_undo_object(self)
+        # Keep notes that start before clear_from_ms
+        self.notes = [n for n in self.notes if n.on_tick < clear_from_ms]
+        self.draw()
+
+    def undo(self):
+        """Restore the saved_notes, swap with current notes."""
+        self.notes, self.saved_notes = self.saved_notes, self.notes
+        self.draw()
+
+    def redo(self):
+        """Redo - is the same as undo, since we're swapping one history."""
+        self.undo()
 
     def move_playhead(self, time_ms):
         global app
@@ -124,10 +181,12 @@ class Track:
             note.draw(base_x=self.x, base_y=self.y, color=self.fg_color)
 
     def schedule_notes(self, offset_ms=0):
+        if self.muted:
+            return
         for note in self.notes:
             # Only schedule things ahead of the playhead when we start
             if(note.on_tick > offset_ms):
-                note.schedule(offset=offset_ms)
+                note.schedule(offset=offset_ms, note_on_fn=self.note_on_fn, note_off_fn=self.note_off_fn)
 
     def consume_midi_event(self, message, tick):
         global app
@@ -137,7 +196,7 @@ class Track:
         value = message[2] if len(message) > 2 else None
         if(method == 0x90): # note on
             note = control
-            seq_note = SeqNote(note, value/127., tick, channel)
+            seq_note = SeqNote(note, value, tick, channel)
             self.live_notes_dict[(channel, note)] = seq_note
             self.notes.append(seq_note)
             app_hwm(tick)            
@@ -165,11 +224,13 @@ class Track:
         global app
         return (x - self.x) * app.ms_per_px + app.x_offset_ms
 
-    def set_notes(self, notes):
-        self.notes = notes
+    def load_notes_from_list(self, notes):
+        self.clear_notes()  # Allows undo
+        self.notes = [SeqNote.from_list(n) for n in notes]
+        self.draw()
 
-    def get_notes(self):
-        return self.notes
+    def get_notes_as_list(self):
+        return [n.as_list() for n in self.notes]
 
 
 def quit(app):
@@ -197,19 +258,22 @@ def frame_cb(x):
     global app
     if(app.playing or app.recording):
         move_playhead()
-    if(app.playing and app.playhead_ms > app.last_ms):
-        app.playing = False
+    #if(app.playing and app.playhead_ms > app.last_ms):
+    #    app.playing = False
 
 def touch_cb(up):
     global app
     (x,y,_,_,_,_) = tulip.touch()
-    # is this a click on the sequence or the position bar
+    # is this a click on the sequence or the position bar?
     update = False
-    if(y >= app.tracks[0].y and y < app.tracks[-1].y + app.tracks[-1].h and x >= app.tracks[0].x):
+    top_of_tracks = app.tracks[0].y
+    bottom_of_tracks = app.tracks[-1].y + app.tracks[-1].h
+    if y >= top_of_tracks and y < bottom_of_tracks and x >= app.tracks[0].x:
+        # Within the track stripes, move the playhead.
         app.offset_ms = app.tracks[0].x_to_ms(x)
         update = True
-    if(y>570): # position bar
-        pos_ms = app.last_ms*(x/screen_width)
+    if y > bottom_of_tracks: # position bar
+        pos_ms = app.last_ms * (x / screen_width)
         # only move view if this click is outside of view
         if(not (pos_ms >= app.x_offset_ms and pos_ms < app.x_offset_ms + (app.ms_per_px*screen_width))):
             app.offset_ms = pos_ms
@@ -228,10 +292,17 @@ def touch_cb(up):
 
 def rec_pushed(x):
     global app
-    if(not app.recording):
+    if app.playing or app.recording:
+        # Pressing record during play/record does stop.
+        stop_pushed(x)
+    else:
+        # Start recording
         amy.send(reset=amy.RESET_TIMEBASE)
         app.playing = False
         app.recording = True
+        # We're about to record, clear the notes in the record-to track
+        if app.current_track:
+            app.current_track.clear_notes(app.playhead_ms)
         # start recording from playhead position
         app.offset_ms = app.playhead_ms
         # Set the other tracks playing
@@ -242,9 +313,11 @@ def rec_pushed(x):
 
 def play_pushed(x):
     global app
-    if app.recording:
-        print('play pressed during recording: ignored')
-    elif(not app.playing):
+    if app.playing or app.recording:
+        # Pressing play during rec/play does stop.
+        stop_pushed(x)
+    else:
+        # Start playing
         amy.send(reset=amy.RESET_TIMEBASE)
         app.recording = False
         app.playing = True
@@ -252,8 +325,11 @@ def play_pushed(x):
         for track in app.tracks:
             track.schedule_notes(app.offset_ms)
 
-def rw_pushed(x):
+def rtz_pushed(x):
     global app
+    if app.playing or app.recording:
+        # Pressing play during rec/play does stop.
+        stop_pushed(x)
     amy.send(reset=amy.RESET_TIMEBASE)
     app.offset_ms = 0
     app.x_offset_ms = 0
@@ -272,6 +348,30 @@ def stop_pushed(x):
     # clear any AMY messages in the queue / currently sounding.
     amy.send(reset=amy.RESET_EVENTS)
     amy.send(reset=amy.RESET_ALL_NOTES)
+
+def save_pushed(x):
+    global app
+    all_notes = {}
+    num_notes = 0
+    for index, track in enumerate(app.tracks):
+        all_notes[index] = track.get_notes_as_list()
+        num_notes += len(all_notes[index])
+    filename = 'dpweseq_saved.json'
+    with open(filename, 'w') as f:
+        json.dump(all_notes, f)
+    #print(num_notes, 'notes saved to', filename)
+        
+def load_pushed(x):
+    global app
+    filename = 'dpweseq_saved.json'
+    with open(filename, 'r') as f:
+        all_notes = json.load(f)
+    num_notes = 0
+    for index, notes in all_notes.items():
+        app.tracks[int(index)].load_notes_from_list(notes)
+        num_notes += len(notes)
+    #print(num_notes, 'notes read from', filename)
+    draw()
 
 def zoom_changed(x):
     global app
@@ -299,8 +399,8 @@ def update_seq_position_bar():
     # Draw a box on the bottom to show zoom position
     ms_per_screen = app.ms_per_px * screen_width
     if(app.last_ms > ms_per_screen): 
-        screen_use_px = int((ms_per_screen / app.last_ms)*screen_width)
-        seq_position_px = int((app.x_offset_ms / app.last_ms)*screen_width)
+        screen_use_px = int((ms_per_screen / app.last_ms) * screen_width)
+        seq_position_px = int((app.x_offset_ms / app.last_ms) * screen_width)
     else:
         screen_use_px= screen_width
         seq_position_px = 0
@@ -315,9 +415,19 @@ def init_tracks():
     track_y = 60
     track_w = screen_width - track_x
     track_h = screen_height // 5
+    channel = 1  # For now, all tracks drive the Synth on MIDI channel 1.
     for i in range(4):
         app.tracks.append(
-            Track(i, x=track_x, y=track_y + (track_h + 10) * i, w=track_w, h=track_h, bg_color=channel_bg_colors[i])
+            Track(
+                i,
+                x=track_x,
+                y=track_y + (track_h + 10) * i,
+                w=track_w,
+                h=track_h,
+                bg_color=channel_bg_colors[i],
+                note_on_fn=midi.config.synth_per_channel[channel].note_on,
+                note_off_fn=midi.config.synth_per_channel[channel].note_off,
+            )
         )
 
 def draw():
@@ -327,6 +437,32 @@ def draw():
 
     update_seq_position_bar()
 
+
+# Undo stack is a list of objects that provide undo() and redo() methods.
+undo_stack = []
+# Which item is the next one to undo (or just beyond the next one to redo).
+undo_position = 0
+
+def undo_pushed(x):
+    global app, undo_stack, undo_position
+    if undo_position < len(undo_stack):
+        undo_stack[undo_position].undo()
+        undo_position += 1
+
+def redo_pushed(x):
+    global app, undo_stack, undo_position
+    if undo_position > 0:
+        undo_position -= 1
+        undo_stack[undo_position].redo()
+
+def add_undo_object(object):
+    """Add a new object to the top of the undo stack."""
+    global undo_stack, undo_position
+    undo_stack = [object] + undo_stack[undo_position:]
+    undo_position = 0
+
+# from lv_binding_micropython_tulip/lvgl/src/font/lv_symbol_def.h
+#LV_SYMBOL_PLAY = "\xEF\x81\x8B"
 
 def run(screen):
     global app
@@ -349,10 +485,14 @@ def run(screen):
     app.activate_callback = activate
     app.quit_callback = quit
     app.deactivate_callback = deactivate
-    app.add(tulip.UIButton(text="Rec",  bg_color=96, fg_color=255, callback=rec_pushed), x=0, y=0)
-    app.add(tulip.UIButton(text="Play", bg_color=48, fg_color=255, callback=play_pushed))
-    app.add(tulip.UIButton(text="Rewind", bg_color=252, fg_color=0, callback=rw_pushed))
-    app.add(tulip.UIButton(text="Stop", bg_color=237, fg_color=0, callback=stop_pushed))
+    app.add(tulip.UIButton(text="O",  bg_color=96, fg_color=255, callback=rec_pushed), x=0, y=0)
+    app.add(tulip.UIButton(text="|>", bg_color=48, fg_color=255, callback=play_pushed))
+    app.add(tulip.UIButton(text="|<", bg_color=252, fg_color=0, callback=rtz_pushed))
+    #app.add(tulip.UIButton(text="Stop", bg_color=237, fg_color=0, callback=stop_pushed))
+    app.add(tulip.UIButton(text="Lo", bg_color=10, fg_color=0, callback=load_pushed))
+    app.add(tulip.UIButton(text="Sa", bg_color=18, fg_color=0, callback=save_pushed))
+    app.add(tulip.UIButton(text="Un", bg_color=102, fg_color=0, callback=undo_pushed))
+    app.add(tulip.UIButton(text="Re", bg_color=134, fg_color=0, callback=redo_pushed))
     app.add(tulip.UISlider(w=200, val=70, bar_color=74, handle_color=208, handle_radius=25, callback=zoom_changed))
     app.ms_per_px = 30 
 
