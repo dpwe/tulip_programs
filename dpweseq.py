@@ -5,14 +5,17 @@
 #  - per-track record-ready radio button
 #  - playback non-record tracks during record
 #  - undo/redo
-#  - "overwrite-on-record" - delete notes that begin within newly-recorded range - currently everything after playhead
+#  - "overwrite-on-record" - delete notes within newly-recorded range - currently everything after playhead
 #  - Save & Load of sequences
 #  - mute track button
+#  - metronome
 # TODO
 #  - playback routing: Send MIDI events rather than Synth.note_* events?  As an option?
-#  - metronome
+#  - add metronome on/off, controls for BPM and meter
 # ISSUES
 #  - when two tracks play to the same synth, the note-offs can cancel each other's overlapping notes
+#  - Toggling while playing doesn't work (we'd need to reschedule everything)
+#  - Moving playhead while playing doesn't work (we'd need to reschedule everything)
 
 import synth, tulip, midi, amy
 import ui
@@ -233,6 +236,37 @@ class Track:
         return [n.as_list() for n in self.notes]
 
 
+# Metronome plays during record
+class Metronome:
+
+    def __init__(self, osc=amy.AMY_OSCS - 1, period=48, meter=4):
+        self.osc = osc
+        self.period = period
+        self.meter = meter  # High beep every this many
+        self.tempo = 108
+        amy.send(osc=self.osc, wave=amy.SINE, bp0='10,1,10,1,10,0,0,0')
+
+    def ms_to_tick(self, ms):
+        ticks_per_beat = 48
+        ms_per_tempo_tick = 60000 / self.tempo / ticks_per_beat
+        return round(ms / ms_per_tempo_tick)
+
+    def start(self, offset_ms=0):
+        total_period = self.period * self.meter
+        # Figure where to play downbeat relative to playhead offset.
+        offset = -self.ms_to_tick(offset_ms)
+        amy.send(osc=self.osc, vel=1, note=72, sequence='%d,%d,0' % ((offset) % total_period,  total_period))
+        for i in range(1, self.meter):
+              amy.send(osc=self.osc, vel=1, note=60, sequence='%d,%d,%d' % (
+                  (offset + i * self.period) % total_period, total_period, i))
+
+    def stop(self):
+        # Clear each of the sequencer loops.
+        for i in range(self.meter):
+            amy.send(osc=self.osc, sequence='0,0,%d' % i)
+        #amy.send(reset=amy.RESET_SEQUENCER)
+
+
 def quit(app):
     pass
 
@@ -245,7 +279,7 @@ def midi_received(message):
             app.current_track.consume_midi_event(message, tick)
             update_seq_position_bar()
 
-        
+
 def move_playhead():
     global app
     app.playhead_ms = tulip.amy_ticks_ms() + app.offset_ms
@@ -258,8 +292,8 @@ def frame_cb(x):
     global app
     if(app.playing or app.recording):
         move_playhead()
-    #if(app.playing and app.playhead_ms > app.last_ms):
-    #    app.playing = False
+        #if(app.playing and app.playhead_ms > app.last_ms):
+        #    app.playing = False
 
 def touch_cb(up):
     global app
@@ -303,12 +337,14 @@ def rec_pushed(x):
         # We're about to record, clear the notes in the record-to track
         if app.current_track:
             app.current_track.clear_notes(app.playhead_ms)
-        # start recording from playhead position
+            # start recording from playhead position
         app.offset_ms = app.playhead_ms
         # Set the other tracks playing
         for track in app.tracks:
             if track != app.current_track:
                 track.schedule_notes(app.offset_ms)
+                # Start the metronome
+        app.metronome.start(app.offset_ms)
 
 
 def play_pushed(x):
@@ -348,6 +384,8 @@ def stop_pushed(x):
     # clear any AMY messages in the queue / currently sounding.
     amy.send(reset=amy.RESET_EVENTS)
     amy.send(reset=amy.RESET_ALL_NOTES)
+    # Stop the metronome
+    app.metronome.stop()
 
 def save_pushed(x):
     global app
@@ -360,7 +398,7 @@ def save_pushed(x):
     with open(filename, 'w') as f:
         json.dump(all_notes, f)
     #print(num_notes, 'notes saved to', filename)
-        
+
 def load_pushed(x):
     global app
     filename = 'dpweseq_saved.json'
@@ -469,7 +507,7 @@ def run(screen):
     app = screen
     # Since we're using sprites, BG drawing and scrolling, use "game mode"
     app.game = True
-    
+
     # Where in ms of the sequence the left side of the screen is
     app.x_offset_ms = 0
     # Where the playhead is currently in the sequence, moves during recording/playback
@@ -502,9 +540,10 @@ def run(screen):
     # Now make track 0 the current record-to track.
     app.tracks[0].set_rec(True)
 
+    app.metronome = Metronome(period=48, meter=4)
+
     app.present()
 
 
 if __name__ == '__main__':
     run(tulip.UIScreen())
-
